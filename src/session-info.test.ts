@@ -110,6 +110,43 @@ describe('session title and updatedAt', () => {
     expect(sessionInfoUpdates(updates)[0]!.title).toHaveLength(60);
   });
 
+  it.each([
+    {
+      name: 'one text block',
+      prompt: [{
+        type: 'text' as const,
+        text: '<t3_code_instructions>\nUse the repo tools.\n</t3_code_instructions>\n\n<user_request>\n  Fix the\n login bug\n</user_request>',
+      }],
+      title: 'Fix the login bug',
+    },
+    {
+      name: 'separate text blocks',
+      prompt: [
+        { type: 'text' as const, text: '<t3_code_instructions>Use the repo tools.</t3_code_instructions>' },
+        { type: 'text' as const, text: '<user_request>Add a test</user_request>' },
+      ],
+      title: 'Add a test',
+    },
+    {
+      name: 'an empty request',
+      prompt: [{ type: 'text' as const, text: '<t3_code_instructions>Rules</t3_code_instructions><user_request> </user_request>' }],
+      title: 'Amp session',
+    },
+    {
+      name: 'an unclosed tag',
+      prompt: [{ type: 'text' as const, text: 'Explain <user_request> tags' }],
+      title: 'Explain <user_request> tags',
+    },
+  ])('takes the title from the <user_request> block with $name', async ({ prompt, title }) => {
+    const agent = createAgent();
+    await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+
+    await agent.prompt({ sessionId: session.sessionId, prompt });
+
+    expect(sessionInfoUpdates(updates)[0]!.title).toBe(title);
+  });
+
   it('uses a fallback title when the first turn has no text', async () => {
     const agent = createAgent();
     await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });

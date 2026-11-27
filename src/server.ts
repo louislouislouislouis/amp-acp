@@ -90,13 +90,16 @@ function decodeSessionCursor(cursor: string): number | null {
   }
 }
 
-/** Derive a stable title from the first user turn without calling a model. */
+/**
+ * Derive a stable title from the first user turn without calling a model.
+ * T3 Code puts its own instructions first and the user's text in `<user_request>`.
+ */
 function titleFromPrompt(prompt: PromptRequest['prompt']): string {
-  const text = prompt
+  const raw = prompt
     .flatMap((chunk) => chunk.type === 'text' ? [chunk.text] : [])
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .join(' ');
+  const userRequest = /<user_request>([\s\S]*?)<\/user_request>/.exec(raw)?.[1];
+  const text = (userRequest ?? raw).replace(/\s+/g, ' ').trim();
   return text ? text.slice(0, MAX_SESSION_TITLE_LENGTH).trim() : FALLBACK_SESSION_TITLE;
 }
 const PERMISSION_MODES = ['default', 'bypass'] as const;

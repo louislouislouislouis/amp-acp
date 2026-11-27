@@ -191,7 +191,7 @@ Native exported tool results with `run.status: "done"`, a nonempty tool ID, and 
 
 ### Session title and timestamp
 
-amp-acp sends the standard `session_info_update` notification with a human-readable `title` and an ISO 8601 `updatedAt` timestamp. The title comes from the first user prompt: whitespace is collapsed, the text is truncated to 60 characters, and a first turn with no text falls back to `Amp session`. amp-acp never calls a model to summarize the session.
+amp-acp sends the standard `session_info_update` notification with a human-readable `title` and an ISO 8601 `updatedAt` timestamp. The title comes from the first user prompt: whitespace is collapsed, the text is truncated to 60 characters, and a first turn with no text falls back to `Amp session`. If the prompt has a `<user_request>…</user_request>` block, as T3 Code sends after its own instructions, only the block's content is used. amp-acp never calls a model to summarize the session.
 
 Both values are stored alongside the ACP-to-Amp mapping and restored by `session/load` and `session/resume`. During `session/load`, a title or timestamp exported by `amp threads export` takes precedence, so a title renamed in Amp remains authoritative.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Take the session title from the `<user_request>` block when the first prompt has one. T3 Code sends its instructions first, so titles no longer start with them. Prompts without the block keep the old title.
+
 ## 0.13.0 - 2026-11-15
 
 ### Changed
