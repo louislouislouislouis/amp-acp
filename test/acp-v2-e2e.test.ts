@@ -221,7 +221,7 @@ describe('ACP v2 adapter', () => {
       const closed = (await waitFor((message) => message.id === 2)).result?.sessionId as string;
       send(3, 'session/new', { cwd: fixtureDir, mcpServers: [] });
       const abandoned = (await waitFor((message) => message.id === 3)).result?.sessionId as string;
-      send(4, 'session/set_config_option', { sessionId: abandoned, configId: 'reasoning-effort', value: 'high' });
+      send(4, 'session/set_config_option', { sessionId: abandoned, configId: 'permission', value: 'bypass' });
       await waitFor((message) => message.id === 4);
       expect((await readdir(path.join(stateDir, 'sessions'))).sort()).toEqual([`${abandoned}.json`, `${closed}.json`].sort());
 

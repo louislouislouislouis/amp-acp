@@ -375,7 +375,7 @@ describe('Binary exit cleanup', () => {
         await request(1, 'initialize', { protocolVersion: 1, clientCapabilities: {} });
         const created = await request(2, 'session/new', { cwd: '/tmp', mcpServers: [] });
         const sessionId = created.result!.sessionId as string;
-        await request(3, 'session/set_config_option', { sessionId, configId: 'reasoning-effort', value: 'high' });
+        await request(3, 'session/set_config_option', { sessionId, configId: 'permission', value: 'bypass' });
         expect(fs.readdirSync(sessionsDir).sort()).toEqual(['S-existing-000000.json', `${sessionId}.json`].sort());
 
         if (stop === 'stdin-close') child.stdin!.end();

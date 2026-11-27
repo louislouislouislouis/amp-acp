@@ -173,7 +173,7 @@ describe('session list, delete, and close', () => {
     const agent = createAgent();
     await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
-    await agent.setSessionConfigOption({ sessionId: session.sessionId, configId: 'reasoning-effort', value: 'high' });
+    await agent.setSessionConfigOption({ sessionId: session.sessionId, configId: 'permission', value: 'bypass' });
     expect((await agent.listSessions({})).sessions).toHaveLength(1);
 
     await agent.closeSession({ sessionId: session.sessionId });
