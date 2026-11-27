@@ -9,6 +9,7 @@ import {
   createAmpTransport,
   createCliTransport,
   isAmpThreadId,
+  isCompiledBinary,
   setAmpThreadArchived,
   type AmpExecutionOptions,
   type AmpPromptContent,
@@ -703,5 +704,19 @@ console.log(JSON.stringify({ type: 'result', is_error: false, result: text }));
       type: 'assistant',
       result: { prompt: 'recovered' },
     });
+  });
+});
+
+describe('isCompiledBinary', () => {
+  it.each([
+    ['file:///$bunfs/root/amp-acp', true],
+    ['file:///B:/~BUN/root/amp-acp.exe', true],
+    ['file:///usr/lib/node_modules/amp-acp/dist/index.js', false],
+  ])('%s -> %p', (url, expected) => {
+    expect(isCompiledBinary(url)).toBe(expected);
+  });
+
+  it('is false when running from source', () => {
+    expect(isCompiledBinary()).toBe(false);
   });
 });

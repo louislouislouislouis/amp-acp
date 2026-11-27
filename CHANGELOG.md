@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Prebuilt binary: Orb turns no longer run the `@ampcode/cli` in the opened project's `node_modules`, which may be old. They use the Amp CLI from `AMP_CLI_PATH` or `PATH`. The binary also no longer copies Amp's native binary into that project's `node_modules`.
+
 ## 0.13.0 - 2026-11-15
 
 ### Changed

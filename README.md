@@ -169,6 +169,8 @@ Existing ACP clients remain compatible and can ignore the extension metadata. Se
 
 Select **Orb** under **Execution Environment** in the ACP session configuration to run the Amp thread in a remote Amp Orb. Text-only Orb sessions use the `@ampcode/sdk` transport, even when local execution uses the default CLI transport. Orb image turns use the CLI `--orb-execute --attach` route described under [Image prompts](#image-prompts).
 
+The prebuilt binary also uses the CLI for Orb turns when the directory it starts in, or a parent, has `node_modules/@ampcode/cli`. Otherwise the SDK would run that project's copy, which may be old. The binary never writes to a project's `node_modules`.
+
 By default, Amp infers the project from the Git remotes of the directory supplied by the ACP client. Set `AMP_ACP_ORB_PROJECT` to an Amp project reference (`namespace/name`, `owner/repo`, or a repository URL) to override that inference.
 
 Permissions, MCP servers, skills, and enabled tools supplied by the local client do not apply inside an Orb. Configure them on the Amp project instead. Authentication must have access to Amp Orbs and to the selected project.
@@ -207,7 +209,7 @@ Deleting a session also makes later `session/load` and `session/resume` calls fa
 
 ### Amp execution transport
 
-By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback. Both transports accept plugin agent modes (see below). Explicit model selections and image turns use the CLI even with the SDK transport, including Orb sessions, because the pinned SDK has no `--model` option and cannot stream image input.
+By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback. Both transports accept plugin agent modes (see below). Explicit model selections and image turns use the CLI even with the SDK transport, including Orb sessions, because the pinned SDK has no `--model` option and cannot stream image input. The prebuilt binary also uses the CLI when the SDK would pick a project's `@ampcode/cli` (see [Orb execution](#orb-execution)).
 
 ### Plan updates
 

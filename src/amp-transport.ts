@@ -1,5 +1,6 @@
 import { execute, type AmpOptions } from '@ampcode/sdk';
 import { rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -179,12 +180,32 @@ export async function setAmpThreadArchived(
   }
 }
 
+/** Bun compiled binaries load their modules from an embedded `$bunfs` (`~BUN` on Windows) filesystem. */
+export function isCompiledBinary(moduleUrl: string = import.meta.url): boolean {
+  return moduleUrl.startsWith('file:///$bunfs/') || moduleUrl.includes('/~BUN/');
+}
+
+/**
+ * A compiled binary bundles no Amp CLI, so its package lookups start from the
+ * working directory. There, the SDK would run the opened project's @ampcode/cli.
+ */
+function sdkWouldRunProjectAmpCli(): boolean {
+  if (!isCompiledBinary()) return false;
+  try {
+    createRequire(import.meta.url).resolve('@ampcode/cli/package.json');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const sdkTransport: AmpTransport = {
   name: 'sdk',
   execute(request) {
     // The pinned SDK has no --model option and validates streaming input as
-    // text-only. Use the CLI for explicit models and image turns, including Orbs.
-    if (request.options.model || request.content) {
+    // text-only. Use the CLI for explicit models, image turns, and when the SDK
+    // would pick a project's Amp CLI, including Orbs.
+    if (request.options.model || request.content || sdkWouldRunProjectAmpCli()) {
       const cli = createCliTransport();
       return (async function* () {
         try {

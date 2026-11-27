@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { runAcp } from './run-acp.js';
 import { runAcpV2 } from './run-acp-v2.js';
+import { isCompiledBinary } from './amp-transport.js';
 
 const AMP_CLI_NATIVE_PACKAGES: Partial<Record<NodeJS.Platform, Partial<Record<string, { pkg: string; bin: string }>>>> = {
   darwin: {
@@ -176,15 +177,19 @@ if (process.argv.includes('--setup')) {
     }
   }
 
-  // Orb execution always uses the SDK, which resolves @ampcode/cli's package
-  // binary before AMP_CLI_PATH. Repair Bun's placeholder package binary even
-  // when local execution uses the default direct CLI transport.
-  try {
-    repairAmpCliPackageBin(createRequire(import.meta.url));
-  } catch { /* fall through; the SDK will report a useful error if Orb execution is selected */ }
+  // A compiled binary bundles no @ampcode/cli. Its lookups start from the
+  // working directory and would find, and repair, the opened project's copy.
+  if (!isCompiledBinary()) {
+    // Orb execution always uses the SDK, which resolves @ampcode/cli's package
+    // binary before AMP_CLI_PATH. Repair Bun's placeholder package binary even
+    // when local execution uses the default direct CLI transport.
+    try {
+      repairAmpCliPackageBin(createRequire(import.meta.url));
+    } catch { /* fall through; the SDK will report a useful error if Orb execution is selected */ }
 
-  if (process.env.AMP_ACP_TRANSPORT === 'sdk') {
-    preferBundledAmpCliBinary();
+    if (process.env.AMP_ACP_TRANSPORT === 'sdk') {
+      preferBundledAmpCliBinary();
+    }
   }
 
   if (process.env.AMP_ACP_PROTOCOL?.toLowerCase() === 'v2') {
