@@ -87,6 +87,8 @@ describe('FileThreadMappingStore', () => {
       cwd: '/tmp/project',
       title: 'Fix the login bug',
       updatedAt: '2026-10-31T12:00:00.000Z',
+      archived: true,
+      titlePending: true,
     });
 
     expect(await new FileThreadMappingStore(stateDir).load(sessionId)).toEqual({
@@ -99,6 +101,8 @@ describe('FileThreadMappingStore', () => {
       cwd: '/tmp/project',
       title: 'Fix the login bug',
       updatedAt: '2026-10-31T12:00:00.000Z',
+      archived: true,
+      titlePending: true,
     });
   });
 
@@ -120,6 +124,9 @@ describe('FileThreadMappingStore', () => {
     await expect(store.load(sessionId)).rejects.toThrow('Invalid persisted mapping');
 
     await writeFile(mappingPath, JSON.stringify({ sessionId, threadId, updatedAt: 42 }));
+    await expect(store.load(sessionId)).rejects.toThrow('Invalid persisted mapping');
+
+    await writeFile(mappingPath, JSON.stringify({ sessionId, threadId, archived: 'yes' }));
     await expect(store.load(sessionId)).rejects.toThrow('Invalid persisted mapping');
   });
 

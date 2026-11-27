@@ -5,10 +5,12 @@ import path from 'node:path';
 import {
   buildAmpArchiveArgs,
   buildAmpCliArgs,
+  buildAmpRenameArgs,
   buildAmpSdkOptions,
   createAmpTransport,
   createCliTransport,
   isAmpThreadId,
+  renameAmpThread,
   setAmpThreadArchived,
   type AmpExecutionOptions,
   type AmpPromptContent,
@@ -196,6 +198,30 @@ await writeFile(process.env.ARGS_PATH, JSON.stringify(process.argv.slice(2)));
     ]);
   });
 
+  it('renames a thread with the title after --, so a leading dash is not a flag', async () => {
+    const argsPath = path.join(fixtureDir, 'rename-args.json');
+    const lifecycleFixture = path.join(fixtureDir, 'fake-rename.mjs');
+    const threadId = 'T-01a03c00-e608-7007-8181-5c1cc56757be';
+    await writeFile(lifecycleFixture, `
+import { writeFile } from 'node:fs/promises';
+await writeFile(process.env.ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+`);
+
+    expect(() => buildAmpRenameArgs('S-not-an-amp-thread', 'Title')).toThrow('Invalid Amp thread ID');
+    await renameAmpThread(threadId, '-v release notes', {
+      command: process.execPath,
+      commandArgs: [lifecycleFixture],
+      env: { ARGS_PATH: argsPath },
+    });
+    expect(JSON.parse(await Bun.file(argsPath).text())).toEqual([
+      'threads',
+      'rename',
+      threadId,
+      '--',
+      '-v release notes',
+    ]);
+  });
+
   it('surfaces Amp CLI archive failures', async () => {
     const lifecycleFixture = path.join(fixtureDir, 'failing-archive.mjs');
     await writeFile(lifecycleFixture, `
@@ -237,6 +263,21 @@ process.exit(3);
       '--stream-json-input',
       '--no-archive-after-execute',
     ]);
+  });
+
+  it('passes a new thread title through --title to the CLI and SDK', () => {
+    expect(buildAmpCliArgs({ ...baseOptions, title: 'Fix the login bug' })).toEqual([
+      '--execute',
+      '--stream-json',
+      '--stream-json-input',
+      '--no-archive-after-execute',
+      '--title',
+      'Fix the login bug',
+    ]);
+    expect(buildAmpSdkOptions({ ...baseOptions, title: 'Fix the login bug' })).toMatchObject({
+      title: 'Fix the login bug',
+    });
+    expect(buildAmpSdkOptions(baseOptions)).not.toHaveProperty('title');
   });
 
   it('passes a selected model through --model, not --mode or --features', () => {

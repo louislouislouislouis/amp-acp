@@ -26,6 +26,10 @@ export interface AmpThreadMapping {
   title?: string;
   /** ISO 8601 timestamp of the last completed turn. */
   updatedAt?: string;
+  /** Whether the Amp thread is archived; hides the session from default listings. */
+  archived?: boolean;
+  /** The client set `title` before Amp created the thread; Amp still needs it. */
+  titlePending?: boolean;
 }
 
 export interface ThreadMappingStore {
@@ -64,6 +68,14 @@ function validateMapping(value: unknown, expectedSessionId: string): AmpThreadMa
     const fieldValue = mapping[field];
     if (fieldValue === undefined) continue;
     if (typeof fieldValue !== 'string') {
+      throw new Error(`Invalid persisted mapping for ACP session ${expectedSessionId}`);
+    }
+    result[field] = fieldValue;
+  }
+  for (const field of ['archived', 'titlePending'] as const) {
+    const fieldValue = mapping[field];
+    if (fieldValue === undefined) continue;
+    if (typeof fieldValue !== 'boolean') {
       throw new Error(`Invalid persisted mapping for ACP session ${expectedSessionId}`);
     }
     result[field] = fieldValue;

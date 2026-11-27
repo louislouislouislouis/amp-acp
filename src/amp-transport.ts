@@ -76,6 +76,8 @@ export interface AmpExecutionOptions {
   dangerouslyAllowAll?: boolean;
   mcpConfig?: AmpMcpConfig;
   continue?: boolean | string;
+  /** Title for a new thread (`--title`); only set when not continuing. */
+  title?: string;
 }
 
 export interface AmpStreamMessage {
@@ -145,16 +147,33 @@ export function buildAmpArchiveArgs(threadId: string, archived: boolean): string
     : ['threads', 'archive', '--unarchive', threadId];
 }
 
-export async function setAmpThreadArchived(
+/** `--` keeps a title that starts with `-` from being parsed as a flag. */
+export function buildAmpRenameArgs(threadId: string, title: string): string[] {
+  if (!isAmpThreadId(threadId)) {
+    throw new Error(`Invalid Amp thread ID: ${threadId}`);
+  }
+  return ['threads', 'rename', threadId, '--', title];
+}
+
+export function setAmpThreadArchived(
   threadId: string,
   archived: boolean,
   options: AmpThreadLifecycleOptions = {},
 ): Promise<void> {
+  return runAmpThreadCommand(buildAmpArchiveArgs(threadId, archived), options);
+}
+
+export function renameAmpThread(
+  threadId: string,
+  title: string,
+  options: AmpThreadLifecycleOptions = {},
+): Promise<void> {
+  return runAmpThreadCommand(buildAmpRenameArgs(threadId, title), options);
+}
+
+async function runAmpThreadCommand(args: string[], options: AmpThreadLifecycleOptions): Promise<void> {
   const command = options.command ?? process.env.AMP_CLI_PATH ?? 'amp';
-  const child = spawn(command, [
-    ...(options.commandArgs ?? []),
-    ...buildAmpArchiveArgs(threadId, archived),
-  ], {
+  const child = spawn(command, [...(options.commandArgs ?? []), ...args], {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
     stdio: ['ignore', 'ignore', 'pipe'],
@@ -217,6 +236,7 @@ export function buildAmpSdkOptions(options: AmpExecutionOptions): AmpOptions {
     dangerouslyAllowAll: options.dangerouslyAllowAll,
     mcpConfig: options.mcpConfig,
     continue: options.continue,
+    ...(options.title ? { title: options.title } : {}),
   };
 }
 
@@ -244,6 +264,7 @@ export function buildAmpCliArgs(options: AmpExecutionOptions): string[] {
   if (options.effort) args.push('--features', `effort:${options.effort}`);
   if (options.dangerouslyAllowAll) args.push('--dangerously-allow-all');
   if (options.mcpConfig) args.push('--mcp-config', JSON.stringify(options.mcpConfig));
+  if (options.title) args.push('--title', options.title);
 
   return args;
 }

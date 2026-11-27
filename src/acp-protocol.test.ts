@@ -138,6 +138,8 @@ describe('ACP Protocol End-to-End', () => {
       expect(response.agentCapabilities?.sessionCapabilities?.list).toEqual({});
       expect(response.agentCapabilities?.sessionCapabilities?.delete).toEqual({});
       expect(response.agentCapabilities?.sessionCapabilities?.close).toEqual({});
+      expect(response.agentCapabilities?.sessionCapabilities?.archive).toEqual({});
+      expect(response.agentCapabilities?.sessionCapabilities?.title).toEqual({});
       expect(response.agentCapabilities?._meta?.['amp-acp/thread-lifecycle']).toEqual({
         version: 1,
         methods: {

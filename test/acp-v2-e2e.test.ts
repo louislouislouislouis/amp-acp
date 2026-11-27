@@ -228,7 +228,7 @@ describe('ACP v2 adapter', () => {
 
       send(2, 'session/list', { cwd: fixtureDir });
       const firstPage = await waitFor((message) => message.id === 2);
-      const expected = sessions.toReversed().map(({ threadId, ...session }) => session);
+      const expected = sessions.toReversed().map(({ threadId, ...session }) => ({ ...session, archived: false }));
       expect(firstPage.result?.sessions).toEqual(expected.slice(0, 50));
       expect(typeof firstPage.result?.nextCursor).toBe('string');
 
@@ -237,7 +237,7 @@ describe('ACP v2 adapter', () => {
 
       send(4, 'session/list', { cwd: '/other-project' });
       expect((await waitFor((message) => message.id === 4)).result).toEqual({
-        sessions: [{ sessionId: 'S-other-000000', cwd: '/other-project' }],
+        sessions: [{ sessionId: 'S-other-000000', cwd: '/other-project', archived: false }],
       });
 
       send(5, 'session/list', { cwd: '/missing-project' });

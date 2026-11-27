@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Serve the ACP `session/archive`, `session/unarchive`, and `session/set_title` methods on ACP v1 and the v2 bridge, and advertise the `archive` and `title` session capabilities. Archive maps to `amp threads archive [--unarchive]`. Set title maps to `amp threads rename`, or to `--title` when Amp has not created the thread yet.
+- `session/list` takes the `archived` filter (`exclude` by default, `include`, `only`) and reports `archived` on every session.
+
+### Changed
+
+- The `amp-acp/thread/set-archived` extension still works. It now also records the archive state, so archived sessions leave the default `session/list`.
+
 ## 0.13.0 - 2026-11-15
 
 ### Changed

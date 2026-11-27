@@ -118,7 +118,7 @@ Clients that advertise `clientCapabilities.auth.terminal: true` receive a standa
 - **Session resume** — `session/load` reattaches to the underlying Amp thread after amp-acp restarts, so ACP clients can reopen earlier sessions
 - **Session metadata** — each session publishes a title derived from the first prompt (60 characters, whitespace collapsed) and an `updatedAt` timestamp after every turn via `session_info_update`; both are persisted with the session mapping and restored on load or resume
 - **Session discovery and lifecycle** — `session/list` returns persisted sessions (including new sessions that have not started an Amp thread yet), while `session/delete` and `session/close` cancel active and queued work. Delete removes only amp-acp's local mapping; the Amp thread itself is retained
-- **Native thread lifecycle** — ACP clients can persist Amp's durable thread ID and archive or unarchive that exact thread
+- **Native thread lifecycle** — `session/archive`, `session/unarchive`, and `session/set_title` archive, unarchive, and rename the session's Amp thread. The older `amp-acp/thread-lifecycle` extension still works
 - **Native steering** — local CLI sessions keep the Amp process alive across cancellation and send the replacement prompt with Amp's `steer` marker instead of queuing it as ordinary input
 - **Token usage** — each `session/prompt` answers with the turn's token usage (`PromptResponse.usage`: input, output, cache reads and writes), counted from the usage Amp reports for each model response
 - **Context usage and notices** — stream `usage_update` from the latest model call and map Amp stop reasons (`max_tokens`, `max_turn_requests`); report failed MCP servers and permission denials as ACP notices when the client supports them
@@ -161,7 +161,9 @@ Compatible ACP clients can detect protocol revision 1 at `agentCapabilities._met
 - `amp-acp/session/native-metadata` with `{ "sessionId": "S-..." }` returns `{ "version": 1, "sessionId": "S-...", "ampThreadId": "T-..." | null }`.
 - `amp-acp/thread/set-archived` with `{ "sessionId": "S-...", "threadId": "T-...", "archived": true | false }` validates both IDs against the persisted mapping, then invokes `amp threads archive <thread-id>` or `amp threads archive --unarchive <thread-id>` directly without a shell.
 
-Archival is separate from ACP session close. Missing or mismatched mappings fail safely instead of selecting another Amp thread.
+The extension does not close a live session. It records the archive state like `session/archive` does, so `session/list` reports it. Missing or mismatched mappings fail safely instead of selecting another Amp thread.
+
+New clients should use the ACP methods under [Archive and title](#archive-and-title) instead.
 
 Existing ACP clients remain compatible and can ignore the extension metadata. Sessions created before 0.10.0 have no durable mapping, so they cannot be resumed or archived through this extension; starting a new session and completing its first prompt creates the mapping. Inferring a mapping from Amp's latest thread is deliberately forbidden because another CLI, editor, or concurrent session may have created a newer thread. The separate `AMP_ACP_CONTINUE_LATEST=1` option below remains an explicit request to continue the latest thread for a new session, not a lifecycle recovery mechanism.
 
@@ -193,17 +195,27 @@ Native exported tool results with `run.status: "done"`, a nonempty tool ID, and 
 
 amp-acp sends the standard `session_info_update` notification with a human-readable `title` and an ISO 8601 `updatedAt` timestamp. The title comes from the first user prompt: whitespace is collapsed, the text is truncated to 60 characters, and a first turn with no text falls back to `Amp session`. amp-acp never calls a model to summarize the session.
 
-Both values are stored alongside the ACP-to-Amp mapping and restored by `session/load` and `session/resume`. During `session/load`, a title or timestamp exported by `amp threads export` takes precedence, so a title renamed in Amp remains authoritative.
+Both values are stored alongside the ACP-to-Amp mapping and restored by `session/load` and `session/resume`. During `session/load`, a title or timestamp exported by `amp threads export` takes precedence, so a title renamed in Amp remains authoritative. A title set with `session/set_title` replaces the derived one; see below.
 
 ### Session discovery and lifecycle
 
-amp-acp advertises `sessionCapabilities.list`, `delete`, `close`, and `resume`.
+amp-acp advertises `sessionCapabilities.list`, `delete`, `close`, `resume`, `archive`, and `title`.
 
 - `session/list` returns persisted sessions filtered by `cwd` when supplied, newest `updatedAt` first. A session appears as soon as it is created, before its first prompt starts an Amp thread. Results are paginated with an opaque `nextCursor`.
 - `session/close` cancels the active turn and any queued prompts, then releases the in-memory session. The persisted mapping stays, so `session/load` can reopen it later.
 - `session/delete` does the same cancellation and removes the local mapping. It does **not** delete or archive the underlying Amp thread; the thread remains available through the Amp CLI. Delete and close are idempotent, including for unknown session IDs.
 
 Deleting a session also makes later `session/load` and `session/resume` calls fail with an unknown-session error until a new mapping is created.
+
+### Archive and title
+
+These methods work on any stored session, loaded or not. An unknown session returns `-32002`.
+
+- `session/archive` closes the session if it is loaded, then runs `amp threads archive <thread-id>`. `session/unarchive` runs `amp threads archive --unarchive <thread-id>` and does not load the session. Both return `-32602` until the first prompt has created an Amp thread. Archiving an archived session succeeds.
+- `session/list` hides archived sessions by default. Pass `archived: "include"` or `"only"` to see them; other values return `-32602`. Every listed session carries `archived: true | false`.
+- `session/set_title` collapses whitespace and truncates to 60 characters, then returns the stored title. An empty title returns `-32602`. If the thread exists, amp-acp runs `amp threads rename <thread-id> -- <title>`. If not, it stores the title and passes it as `--title` when Amp creates the thread. A loaded session also gets a `session_info_update`.
+
+The archive state and a pending title are stored with the session mapping. The ACP v2 bridge serves the same methods and advertises `capabilities.session.archive` and `title`.
 
 ### Amp execution transport
 
@@ -320,7 +332,7 @@ The v2 adapter keeps the existing session, model, queue, and Amp transport behav
 - `session/prompt` returns `messageId` immediately and reports the background turn through `state_update` (`running` then `idle`).
 - Client config options are exposed as v2 `configId` fields.
 - v1 `plan` updates become v2 `plan_update`; v1 `tool_call` updates become v2 `tool_call_update`.
-- `session/resume`, `session/close`, `session/list`, and `session/set_config_option` forward to the existing implementation. Listing discovers adapter-persisted sessions, with working-directory filtering, titles, timestamps, and cursor pagination; it does not enumerate all Amp account threads.
+- `session/resume`, `session/close`, `session/list`, `session/archive`, `session/unarchive`, `session/set_title`, and `session/set_config_option` forward to the existing implementation. Listing discovers adapter-persisted sessions, with working-directory filtering, titles, timestamps, and cursor pagination; it does not enumerate all Amp account threads.
 
 v1 remains the default and is unchanged for Zed, Lody, and other clients that negotiate ACP v1. The v2 adapter is a compatibility bridge, not yet a native v2 implementation: Amp's internal queue and cancellation still drive turns, and there is no v2-native steering or persisted plan identity. The v2 bridge does not register or advertise the v1 `amp-acp/thread-lifecycle` and `amp-acp/steering` extensions. Execution failures use its existing error-notice and idle-state path with stop reason `refusal`; `session/prompt` still returns a `messageId` immediately.
 

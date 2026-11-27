@@ -101,12 +101,12 @@ export class AcpV2Adapter {
   private readonly inner: AmpAcpAgent;
   private readonly inflightBySession = new Map<string, number>();
 
-  constructor() {
+  constructor(createAgent: (client: AcpClient) => AmpAcpAgent = (client) => new AmpAcpAgent(client)) {
     const fakeClient: AcpClient = {
       sessionUpdate: (notification) => this.sendV1Notification(notification),
       notify: async () => {},
     };
-    this.inner = new AmpAcpAgent(fakeClient);
+    this.inner = createAgent(fakeClient);
     this.app = agent()
       .onConnect((connection) => {
         this.connection = connection;
@@ -116,6 +116,9 @@ export class AcpV2Adapter {
       .onRequest(AGENT_METHODS.session_resume, ({ params }) => this.resumeSession(params))
       .onRequest(AGENT_METHODS.session_close, ({ params }) => this.closeSession(params))
       .onRequest(AGENT_METHODS.session_list, ({ params }) => this.inner.listSessions(params))
+      .onRequest(AGENT_METHODS.session_archive, ({ params }) => this.inner.archiveSession(params))
+      .onRequest(AGENT_METHODS.session_unarchive, ({ params }) => this.inner.unarchiveSession(params))
+      .onRequest(AGENT_METHODS.session_set_title, ({ params }) => this.inner.setSessionTitle(params))
       .onRequest(AGENT_METHODS.session_set_config_option, ({ params }) => this.setConfigOption(params))
       .onRequest(AGENT_METHODS.session_prompt, ({ params }) => this.prompt(params))
       .onNotification(AGENT_METHODS.session_cancel, ({ params }) => this.cancel(params));
@@ -150,6 +153,8 @@ export class AcpV2Adapter {
               : {}),
             stdio: {},
           },
+          archive: {},
+          title: {},
         },
       },
       authMethods: response.authMethods?.flatMap((method) => {

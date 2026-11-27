@@ -25,12 +25,19 @@ import {
   type DeleteSessionResponse,
   type CloseSessionRequest,
   type CloseSessionResponse,
+  type ArchiveSessionRequest,
+  type ArchiveSessionResponse,
+  type UnarchiveSessionRequest,
+  type UnarchiveSessionResponse,
+  type SetSessionTitleRequest,
+  type SetSessionTitleResponse,
   type SessionInfo,
   type AvailableCommand,
 } from '@agentclientprotocol/sdk/unstable';
 import {
   createAmpTransport,
   isAmpThreadId,
+  renameAmpThread,
   setAmpThreadArchived,
   type AmpEffort,
   type AmpExecutionOptions,
@@ -425,6 +432,9 @@ interface SessionState {
   mcpStatuses: Map<string, string>;
   /** Set by session/delete so a finishing turn cannot recreate the record. */
   deleted?: boolean;
+  archived?: boolean;
+  /** The client set the title before Amp created the thread; pass it as `--title`. */
+  titlePending?: boolean;
   acpState: AcpConversionState;
 }
 
@@ -442,9 +452,16 @@ type SetThreadArchived = (
   options?: AmpThreadLifecycleOptions,
 ) => Promise<void>;
 
+type RenameThread = (
+  threadId: string,
+  title: string,
+  options?: AmpThreadLifecycleOptions,
+) => Promise<void>;
+
 interface AmpAcpAgentOptions {
   threadStore?: ThreadMappingStore;
   setThreadArchived?: SetThreadArchived;
+  renameThread?: RenameThread;
   exportThread?: ThreadHistoryExporter;
   /** Transport used for Orb execution; defaults to the Amp SDK transport. */
   orbTransport?: AmpTransport;
@@ -462,6 +479,7 @@ export class AmpAcpAgent {
   private orbTransport: AmpTransport;
   private threadStore: ThreadMappingStore;
   private setThreadArchived: SetThreadArchived;
+  private renameThread: RenameThread;
   sessions = new Map<string, SessionState>();
   private clientCapabilities?: ClientCapabilities;
 
@@ -481,6 +499,7 @@ export class AmpAcpAgent {
     this.orbTransport = options.orbTransport ?? createAmpTransport('sdk');
     this.threadStore = options.threadStore ?? new FileThreadMappingStore();
     this.setThreadArchived = options.setThreadArchived ?? setAmpThreadArchived;
+    this.renameThread = options.renameThread ?? renameAmpThread;
     this.exportThread = options.exportThread ?? exportThreadHistory;
     this.replayRetry = options.replayRetry ?? { attempts: 5, delayMs: 2000 };
     this.discoverPluginModes = options.discoverPluginModes ?? discoverPluginModesFromDir;
@@ -501,7 +520,7 @@ export class AmpAcpAgent {
         loadSession: true,
         promptCapabilities: { image: true, embeddedContext: true },
         mcpCapabilities: { http: true, sse: true },
-        sessionCapabilities: { list: {}, delete: {}, close: {}, resume: {} },
+        sessionCapabilities: { list: {}, delete: {}, close: {}, resume: {}, archive: {}, title: {} },
         _meta: {
           [THREAD_LIFECYCLE_CAPABILITY]: {
             version: 1,
@@ -694,6 +713,8 @@ export class AmpAcpAgent {
       cwd,
       ...(mapping.title ? { title: mapping.title } : {}),
       ...(mapping.updatedAt ? { updatedAt: mapping.updatedAt } : {}),
+      ...(mapping.archived ? { archived: true } : {}),
+      ...(mapping.titlePending ? { titlePending: true } : {}),
       mcpStatuses: new Map(),
       acpState: createAcpConversionState(),
     };
@@ -712,6 +733,8 @@ export class AmpAcpAgent {
       cwd: s.cwd,
       ...(s.title ? { title: s.title } : {}),
       ...(s.updatedAt ? { updatedAt: s.updatedAt } : {}),
+      ...(s.archived ? { archived: true } : {}),
+      ...(s.titlePending ? { titlePending: true } : {}),
     });
   }
 
@@ -728,6 +751,10 @@ export class AmpAcpAgent {
   private async publishSessionInfo(sessionId: string, s: SessionState): Promise<void> {
     if (s.deleted) return;
     await this.persistSessionQuiet(sessionId, s);
+    await this.sendSessionInfo(sessionId, s);
+  }
+
+  private async sendSessionInfo(sessionId: string, s: SessionState): Promise<void> {
     if (!s.title && !s.updatedAt) return;
     try {
       await this.client.sessionUpdate({
@@ -869,10 +896,14 @@ export class AmpAcpAgent {
   }
 
   async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+    const archivedFilter = params.archived ?? 'exclude';
+    if (archivedFilter !== 'exclude' && archivedFilter !== 'include' && archivedFilter !== 'only') {
+      throw RequestError.invalidParams(undefined, `Unsupported archived filter: ${archivedFilter}`);
+    }
     const mappings = await this.threadStore.list?.() ?? [];
-    const filtered = params.cwd
-      ? mappings.filter((mapping) => mapping.cwd === params.cwd)
-      : mappings;
+    const filtered = mappings.filter((mapping) =>
+      (!params.cwd || mapping.cwd === params.cwd)
+      && (archivedFilter === 'include' || (archivedFilter === 'only') === (mapping.archived === true)));
     filtered.sort((a, b) => {
       const byTime = (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '');
       return byTime !== 0 ? byTime : a.sessionId.localeCompare(b.sessionId);
@@ -893,6 +924,7 @@ export class AmpAcpAgent {
       cwd: mapping.cwd && path.isAbsolute(mapping.cwd) ? mapping.cwd : process.cwd(),
       ...(mapping.title ? { title: mapping.title } : {}),
       ...(mapping.updatedAt ? { updatedAt: mapping.updatedAt } : {}),
+      archived: mapping.archived === true,
     }));
     const nextOffset = offset + page.length;
     return {
@@ -924,6 +956,71 @@ export class AmpAcpAgent {
     }
     this.transport.closeSession?.(params.sessionId);
     return {};
+  }
+
+  async archiveSession(params: ArchiveSessionRequest): Promise<ArchiveSessionResponse> {
+    await this.setSessionArchived(params.sessionId, true);
+    return {};
+  }
+
+  async unarchiveSession(params: UnarchiveSessionRequest): Promise<UnarchiveSessionResponse> {
+    await this.setSessionArchived(params.sessionId, false);
+    return {};
+  }
+
+  /** Archiving a live session closes it first, as `session/archive` requires. */
+  private async setSessionArchived(sessionId: string, archived: boolean): Promise<void> {
+    const live = this.sessions.get(sessionId);
+    const mapping = live ? null : await this.loadKnownSession(sessionId);
+    const threadId = live?.threadId ?? mapping?.threadId;
+    if (!threadId) {
+      throw RequestError.invalidParams(undefined, `ACP session ${sessionId} has no Amp thread yet`);
+    }
+    if (archived && live) await this.closeSession({ sessionId });
+    await this.setThreadArchived(threadId, archived);
+    await this.recordArchived(sessionId, live, mapping, archived);
+  }
+
+  /** Also marks the live state, so a cancelled turn that persists later keeps the flag. */
+  private async recordArchived(
+    sessionId: string,
+    live: SessionState | undefined,
+    mapping: AmpThreadMapping | null,
+    archived: boolean,
+  ): Promise<void> {
+    if (live) {
+      live.archived = archived;
+      await this.persistSession(sessionId, live);
+    } else if (mapping) {
+      await this.threadStore.save({ ...mapping, archived: archived || undefined });
+    }
+  }
+
+  async setSessionTitle(params: SetSessionTitleRequest): Promise<SetSessionTitleResponse> {
+    const title = normalizeTitle(params.title);
+    if (!title) {
+      throw RequestError.invalidParams(undefined, 'title must not be empty');
+    }
+    const live = this.sessions.get(params.sessionId);
+    const mapping = live ? null : await this.loadKnownSession(params.sessionId);
+    const threadId = live?.threadId ?? mapping?.threadId;
+    if (threadId) await this.renameThread(threadId, title);
+    if (live) {
+      live.title = title;
+      live.titlePending = !threadId;
+      await this.persistSession(params.sessionId, live);
+      await this.sendSessionInfo(params.sessionId, live);
+    } else {
+      await this.threadStore.save({ ...mapping!, title, titlePending: !threadId || undefined });
+    }
+    return { title };
+  }
+
+  /** Loads a stored session for lifecycle methods that work without loading it. */
+  private async loadKnownSession(sessionId: string): Promise<AmpThreadMapping> {
+    const mapping = isAcpSessionId(sessionId) ? await this.threadStore.load(sessionId) : null;
+    if (!mapping) throw RequestError.sessionNotFound(sessionId);
+    return mapping;
   }
 
   private cancelSessionTurns(s: SessionState, preserveSteering = false): void {
@@ -1106,6 +1203,8 @@ export class AmpAcpAgent {
     } else if (process.env.AMP_ACP_CONTINUE_LATEST) {
       options.continue = true;
       console.error('[acp] AMP_ACP_CONTINUE_LATEST set; continuing latest thread on this installation');
+    } else if (s.titlePending && s.title) {
+      options.title = s.title;
     }
 
     const turnUsage = new TurnUsage();
@@ -1141,6 +1240,11 @@ export class AmpAcpAgent {
           }
           if (!s.threadId) {
             s.threadId = message.session_id;
+            if (s.titlePending) {
+              s.titlePending = false;
+              // The title was set after this turn started, so it missed `--title`.
+              if (s.title && s.title !== options.title) await this.renameThreadQuiet(s.threadId, s.title);
+            }
             await this.persistSession(params.sessionId, s);
             console.error(`[amp] thread ${s.threadId}`);
           }
@@ -1194,6 +1298,14 @@ export class AmpAcpAgent {
     } finally {
       s.updatedAt = new Date().toISOString();
       await this.publishSessionInfo(params.sessionId, s);
+    }
+  }
+
+  private async renameThreadQuiet(threadId: string, title: string): Promise<void> {
+    try {
+      await this.renameThread(threadId, title);
+    } catch (e) {
+      console.error('[acp] failed to rename Amp thread', e);
     }
   }
 
@@ -1434,9 +1546,14 @@ export class AmpAcpAgent {
     }
 
     await this.setThreadArchived(params.threadId, params.archived);
+    await this.recordArchived(params.sessionId, active, persisted, params.archived);
     return { version: 1, threadId: params.threadId, archived: params.archived };
   }
 
+}
+
+function normalizeTitle(title: string): string {
+  return title.replace(/\s+/g, ' ').trim().slice(0, MAX_SESSION_TITLE_LENGTH).trim();
 }
 
 const MAX_ERROR_DETAIL_LENGTH = 2_000;
