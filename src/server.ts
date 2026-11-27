@@ -1186,7 +1186,7 @@ export class AmpAcpAgent {
       }
       console.error('[amp] Execution error:', err);
       if (err instanceof RequestError) throw err;
-      const detail = errorDetail(err);
+      const detail = withModelRejectionHint(errorDetail(err), options.model);
       throw RequestError.internalError(
         detail ? { details: detail } : undefined,
         detail || undefined,
@@ -1447,6 +1447,17 @@ function errorDetail(error: unknown): string {
   return clean.length > MAX_ERROR_DETAIL_LENGTH
     ? `${clean.slice(0, MAX_ERROR_DETAIL_LENGTH)}...`
     : clean;
+}
+
+const THREAD_CREATE_REJECTED = /Failed to create\b[^\n]*\bthread\b[^\n]*\b400\b/;
+
+/**
+ * Amp lists models its server may refuse when it creates the thread, and the
+ * raw 400 never names the model. Name it so users know what to change.
+ */
+function withModelRejectionHint(detail: string, model: string | undefined): string {
+  if (!model || !THREAD_CREATE_REJECTED.test(detail)) return detail;
+  return `Amp rejected the model "${model}". Choose another model.\n${detail}`;
 }
 
 export function isAuthError(message: string): boolean {

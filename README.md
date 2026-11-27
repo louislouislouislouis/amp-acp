@@ -221,6 +221,8 @@ Amp replaced the built-in `low`, `medium`, `high`, and `ultra` dial modes with a
 
 Selecting a model passes it to the Amp CLI as `--model <provider/model>` for both local and Orb sessions. SDK sessions with an explicit model use the CLI fallback rather than ignoring the selection. The selection is persisted with the session mapping and restored by `session/load` and `session/resume`, even when model discovery is unavailable — sessions persisted with the old dial values load as *Default*.
 
+The selector can list models that Amp's server refuses when it creates the thread. The turn then fails with a 400 that does not name the model. amp-acp puts `Amp rejected the model "<model id>". Choose another model.` on the line before the original error. It does this only for an explicit model selection and a failed thread creation with status 400. Other errors are unchanged.
+
 Set `AMP_ACP_DISABLE_SHOW_AGENT_OPTIONS=1` to skip the CLI discovery (tests use this). The result is cached for 60 seconds per working directory, so a model added by an Amp release shows up in the selector of new sessions within about a minute, without an adapter restart. When discovery fails (for example, the Amp CLI is not on `PATH`), new sessions list *Default* plus any plugin agent modes; restored sessions also retain their saved selection.
 
 ### Plugin agent modes
@@ -418,6 +420,8 @@ Everything also runs inside an Amp orb out of the box — orbs ship the Amp CLI 
 **Amp CLI not found**: Run `amp --version` in a terminal. If it works there but not in your editor, set `AMP_CLI_PATH` to the absolute CLI path in the agent server environment.
 
 **Tool execution problems**: Check Zed's output panel for detailed errors from the Amp CLI.
+
+**`Amp rejected the model "…"`**: Amp refused to create a thread with the selected model. Choose another model, or *Default*.
 
 **MCP server not connecting**: Ensure the MCP server command is correct and any required environment variables are set. Check Zed's logs for connection errors.
 

@@ -200,6 +200,56 @@ describe('prompt usage, stop reason, and notices', () => {
     ])).rejects.toMatchObject({ code: -32000 });
   });
 
+  describe('model rejected at thread creation', () => {
+    const model = 'google-vertex/gemini-3.5-flash';
+    const rejection = 'Amp CLI process exited with code 1: Error: Failed to create thread-actors thread: '
+      + '400 {"error":{"name":"ZodError","message":"[{\\"code\\":\\"invalid_union\\"}]"}}';
+
+    async function promptWithError(error: string, selection?: string) {
+      const transport: AmpTransport = {
+        name: 'cli',
+        async *execute() {
+          throw new Error(error);
+        },
+      };
+      const agent = new AmpAcpAgent({ sessionUpdate: async () => {}, notify: async () => {} }, transport, {
+        threadStore: { load: async () => null, save: async () => {} },
+        discoverPluginModes: () => [],
+        discoverModels: () => [],
+      });
+      const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+      if (selection) {
+        await agent.setSessionConfigOption({ sessionId: session.sessionId, configId: 'amp-model', value: selection });
+      }
+      return agent.prompt({ sessionId: session.sessionId, prompt: [{ type: 'text', text: 'hello' }] });
+    }
+
+    it('names the selected model before the original error', async () => {
+      const detail = `Amp rejected the model "${model}". Choose another model.\n${rejection}`;
+      await expect(promptWithError(rejection, model)).rejects.toMatchObject({
+        code: -32603,
+        message: `Internal error: ${detail}`,
+        data: { details: detail },
+      });
+    });
+
+    it.each([
+      ['no model is selected', rejection, undefined],
+      ['an agent mode is selected', rejection, 'acp-flash'],
+      ['the error is not a rejected thread creation', 'Amp CLI process exited with code 1: model overloaded', model],
+    ])('leaves the error unchanged when %s', async (_case, error, selection) => {
+      await expect(promptWithError(error, selection)).rejects.toMatchObject({
+        code: -32603,
+        message: `Internal error: ${error}`,
+        data: { details: error },
+      });
+    });
+
+    it('keeps authentication errors as auth required', async () => {
+      await expect(promptWithError('Unauthorized', model)).rejects.toMatchObject({ code: -32000 });
+    });
+  });
+
   it('falls back to an agent message when the client does not support notices', async () => {
     const { updates } = await runPrompt([
       {

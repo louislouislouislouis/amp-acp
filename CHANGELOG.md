@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Name the selected model when Amp refuses to create a thread with it. The turn error now starts with `Amp rejected the model "<model id>". Choose another model.`, followed by the original Amp error. This applies only to an explicit model selection and a failed thread creation with status 400; other errors are unchanged. ACP v1 errors and v2 error notices both carry the hint.
+
 ## 0.13.0 - 2026-11-15
 
 ### Changed

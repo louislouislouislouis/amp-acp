@@ -6,6 +6,7 @@ import path from 'node:path';
 import { FileThreadMappingStore } from '../src/thread-mapping-store.js';
 
 const BINARY_PATH = path.resolve(__dirname, '../dist/amp-acp-test');
+const MODEL_REJECTION = 'Error: Failed to create thread-actors thread: 400 {"error":{"name":"ZodError"}}';
 
 interface JsonRpcMessage {
   jsonrpc: string;
@@ -26,6 +27,10 @@ beforeAll(async () => {
 import { createInterface } from 'node:readline';
 
 createInterface({ input: process.stdin }).on('line', (line) => {
+  if (process.argv.includes('--model')) {
+    process.stderr.write(${JSON.stringify(`${MODEL_REJECTION}\n`)}, () => process.exit(1));
+    return;
+  }
   const input = JSON.parse(line);
   const prompt = input.message.content.map((part) => part.text ?? '').join('');
   console.log(JSON.stringify({ type: 'user', message: { content: input.message.content } }));
@@ -203,6 +208,37 @@ describe('ACP v2 adapter', () => {
           (message.params?.update as { state?: string }).state === 'idle',
       );
       expect((idle.params?.update as { stopReason?: string }).stopReason).toBe('end_turn');
+    } finally {
+      await stopProcess(process);
+    }
+  });
+
+  it('names a model Amp rejected at thread creation in the error notice', async () => {
+    const { process, send, waitFor } = startClient(path.join(fixtureDir, 'model-rejection-state'));
+    try {
+      send(1, 'initialize', { protocolVersion: 2, info: { name: 'v2-model-test', version: '0.0.0' }, capabilities: {} });
+      expect((await waitFor((message) => message.id === 1)).result?.protocolVersion).toBe(2);
+
+      send(2, 'session/new', { cwd: fixtureDir, mcpServers: [] });
+      const sessionId = (await waitFor((message) => message.id === 2)).result?.sessionId;
+      expect(typeof sessionId).toBe('string');
+
+      const model = 'google-vertex/gemini-3.5-flash';
+      send(3, 'session/set_config_option', { sessionId, configId: 'amp-model', type: 'id', value: model });
+      expect((await waitFor((message) => message.id === 3)).error).toBeUndefined();
+
+      send(4, 'session/prompt', { sessionId, prompt: [{ type: 'text', text: 'hello' }] });
+      expect(typeof (await waitFor((message) => message.id === 4)).result?.messageId).toBe('string');
+
+      const notice = await waitFor(
+        (message) =>
+          message.method === 'session/update' &&
+          (message.params?.update as { sessionUpdate?: string }).sessionUpdate === 'notice',
+      );
+      expect((notice.params?.update as { description?: string }).description).toBe(
+        `Internal error: Amp rejected the model "${model}". Choose another model.\n`
+          + `Amp CLI process exited with code 1: ${MODEL_REJECTION}`,
+      );
     } finally {
       await stopProcess(process);
     }
