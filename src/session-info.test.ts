@@ -47,6 +47,7 @@ function sessionInfoUpdates(updates: SessionNotification[]) {
 
 describe('session title and updatedAt', () => {
   let stateDir: string;
+  const originalStateDir = process.env.AMP_ACP_STATE_DIR;
   let updates: SessionNotification[];
 
   beforeEach(() => {
@@ -56,7 +57,8 @@ describe('session title and updatedAt', () => {
   });
 
   afterEach(() => {
-    delete process.env.AMP_ACP_STATE_DIR;
+    if (originalStateDir === undefined) delete process.env.AMP_ACP_STATE_DIR;
+    else process.env.AMP_ACP_STATE_DIR = originalStateDir;
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 

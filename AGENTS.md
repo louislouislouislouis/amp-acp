@@ -33,6 +33,7 @@ This is an ACP (Agent Client Protocol) adapter that bridges Amp Code to ACP-comp
 - Use `console.error` for logging (stdout is for ACP protocol only)
 - Error handling: throw `RequestError` from `@agentclientprotocol/sdk` for protocol errors
 - Naming: camelCase for variables/functions, PascalCase for classes/interfaces
+- Tests: `bunfig.toml` preloads `test/preload.ts`, which points `AMP_ACP_STATE_DIR` at a temp dir for every `bun test` run. A test that overrides it must restore the old value, not delete it
 
 ## Update Protocol
 

@@ -32,6 +32,7 @@ function fastTransport(): AmpTransport {
 
 describe('session list, delete, and close', () => {
   let stateDir: string;
+  const originalStateDir = process.env.AMP_ACP_STATE_DIR;
 
   beforeEach(() => {
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'amp-acp-state-'));
@@ -39,7 +40,8 @@ describe('session list, delete, and close', () => {
   });
 
   afterEach(() => {
-    delete process.env.AMP_ACP_STATE_DIR;
+    if (originalStateDir === undefined) delete process.env.AMP_ACP_STATE_DIR;
+    else process.env.AMP_ACP_STATE_DIR = originalStateDir;
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 

@@ -52,6 +52,7 @@ function createAgent(): InstanceType<typeof AmpAcpAgent> {
 
 describe('AmpAcpAgent session/load', () => {
   let stateDir: string;
+  const originalStateDir = process.env.AMP_ACP_STATE_DIR;
 
   beforeEach(() => {
     capturedCalls.length = 0;
@@ -60,7 +61,8 @@ describe('AmpAcpAgent session/load', () => {
   });
 
   afterEach(() => {
-    delete process.env.AMP_ACP_STATE_DIR;
+    if (originalStateDir === undefined) delete process.env.AMP_ACP_STATE_DIR;
+    else process.env.AMP_ACP_STATE_DIR = originalStateDir;
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 

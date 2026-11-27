@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Tests
+
+- Point `AMP_ACP_STATE_DIR` at a temporary directory for every `bun test` run (`test/preload.ts`, loaded by `bunfig.toml`). Unit and binary tests no longer leave session files in `~/.local/state/amp-acp`.
+
 ## 0.13.0 - 2026-11-15
 
 ### Changed
