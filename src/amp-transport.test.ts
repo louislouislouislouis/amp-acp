@@ -3,13 +3,18 @@ import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  ampThreadUrl,
   buildAmpArchiveArgs,
   buildAmpCliArgs,
+  buildAmpMultiplayerArgs,
   buildAmpSdkOptions,
+  buildAmpShareArgs,
   createAmpTransport,
   createCliTransport,
   isAmpThreadId,
   setAmpThreadArchived,
+  setAmpThreadMultiplayer,
+  setAmpThreadVisibility,
   type AmpExecutionOptions,
   type AmpPromptContent,
   type AmpStreamMessage,
@@ -208,6 +213,80 @@ process.exit(3);
       true,
       { command: process.execPath, commandArgs: [lifecycleFixture] },
     )).rejects.toThrow('Amp CLI process exited with code 3: archive fixture failure');
+  });
+
+  it('builds exact share and multiplayer arguments', () => {
+    const threadId = 'T-01a03c00-e608-7007-8181-5c1cc56757be';
+
+    expect(buildAmpShareArgs(threadId, 'unlisted')).toEqual(['threads', 'share', threadId, '--visibility', 'unlisted']);
+    expect(buildAmpMultiplayerArgs(threadId, { enabled: true })).toEqual(['threads', 'share', 'multiplayer', 'on', threadId]);
+    expect(buildAmpMultiplayerArgs(threadId, { enabled: false })).toEqual(['threads', 'share', 'multiplayer', 'off', threadId]);
+    expect(buildAmpMultiplayerArgs(threadId, { enabled: true, duration: { unit: 'hours', value: 2 } })).toEqual([
+      'threads', 'share', 'multiplayer', 'ttl', threadId, '--hours', '2',
+    ]);
+    expect(() => buildAmpShareArgs('T-1; rm -rf /', 'private')).toThrow('Invalid Amp thread ID');
+    expect(() => buildAmpMultiplayerArgs('S-not-a-thread', { enabled: true })).toThrow('Invalid Amp thread ID');
+  });
+
+  it('shares through the configured Amp CLI and returns its output', async () => {
+    const argsPath = path.join(fixtureDir, 'share-args.json');
+    const shareFixture = path.join(fixtureDir, 'fake-share.mjs');
+    const threadId = 'T-01a03c00-e608-7007-8181-5c1cc56757be';
+    await writeFile(shareFixture, `
+import { writeFile } from 'node:fs/promises';
+await writeFile(process.env.ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+console.log('shared');
+`);
+    const options = { command: process.execPath, commandArgs: [shareFixture], env: { ARGS_PATH: argsPath } };
+
+    expect(await setAmpThreadVisibility(threadId, 'workspace', options)).toBe('shared');
+    expect(JSON.parse(await Bun.file(argsPath).text())).toEqual(['threads', 'share', threadId, '--visibility', 'workspace']);
+
+    await setAmpThreadMultiplayer(threadId, { enabled: true, duration: { unit: 'days', value: 3 } }, options);
+    expect(JSON.parse(await Bun.file(argsPath).text())).toEqual([
+      'threads', 'share', 'multiplayer', 'ttl', threadId, '--days', '3',
+    ]);
+  });
+
+  it('surfaces Amp CLI share failures', async () => {
+    const shareFixture = path.join(fixtureDir, 'failing-share.mjs');
+    await writeFile(shareFixture, `
+console.error('multiplayer needs a shared orb thread');
+process.exit(1);
+`);
+
+    await expect(setAmpThreadMultiplayer(
+      'T-01a03c00-e608-7007-8181-5c1cc56757be',
+      { enabled: true },
+      { command: process.execPath, commandArgs: [shareFixture] },
+    )).rejects.toThrow('Amp CLI process exited with code 1: multiplayer needs a shared orb thread');
+  });
+
+  it('builds thread URLs for the default or configured Amp server', () => {
+    const original = process.env.AMP_URL;
+    try {
+      delete process.env.AMP_URL;
+      expect(ampThreadUrl('T-01a03c00-e608-7007-8181-5c1cc56757be'))
+        .toBe('https://ampcode.com/threads/T-01a03c00-e608-7007-8181-5c1cc56757be');
+      process.env.AMP_URL = 'https://amp.example.com/';
+      expect(ampThreadUrl('T-01a03c00-e608-7007-8181-5c1cc56757be'))
+        .toBe('https://amp.example.com/threads/T-01a03c00-e608-7007-8181-5c1cc56757be');
+    } finally {
+      if (original === undefined) delete process.env.AMP_URL;
+      else process.env.AMP_URL = original;
+    }
+  });
+
+  it('sends visibility only when creating a thread', () => {
+    const shared: AmpExecutionOptions = { ...baseOptions, visibility: 'group' };
+
+    expect(buildAmpCliArgs(shared)).toContain('--visibility');
+    expect(buildAmpCliArgs(shared).slice(-2)).toEqual(['--visibility', 'group']);
+    expect(buildAmpCliArgs({ ...shared, continue: 'T-01a03c00-e608-7007-8181-5c1cc56757be' })).not.toContain('--visibility');
+    expect(buildAmpCliArgs({ ...shared, continue: true })).not.toContain('--visibility');
+    expect(buildAmpSdkOptions(shared).visibility).toBe('group');
+    expect(buildAmpSdkOptions({ ...shared, continue: true }).visibility).toBeUndefined();
+    expect(buildAmpSdkOptions(baseOptions)).not.toHaveProperty('visibility');
   });
 
   it('uses the CLI transport by default', () => {
