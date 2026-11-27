@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add a **Visibility** config option (*Amp default*, *Private*, *Workspace*, *Group*, *Link*). Before the first turn it adds `--visibility` to the call that creates the thread. After, it runs `amp threads share <thread> --visibility <value>`; a refusal keeps the old value and sends an error notice. The value is saved with the session, and `session/load` takes the real visibility from `amp threads export`. *Amp default* sends no flag, so existing sessions behave as before.
+- Add `/share [private|workspace|group|link]`, `/link`, and `/multiplayer [on|off|<duration>]`. amp-acp answers them in the chat with the thread URL, without an Amp turn. `/multiplayer` runs `amp threads share multiplayer` and refuses local sessions, missing threads, and private threads.
+
 ## 0.13.0 - 2026-11-15
 
 ### Changed

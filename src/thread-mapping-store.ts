@@ -26,6 +26,8 @@ export interface AmpThreadMapping {
   title?: string;
   /** ISO 8601 timestamp of the last completed turn. */
   updatedAt?: string;
+  /** Amp thread visibility; absent leaves new threads to Amp's default. */
+  visibility?: string;
 }
 
 export interface ThreadMappingStore {
@@ -60,7 +62,7 @@ function validateMapping(value: unknown, expectedSessionId: string): AmpThreadMa
     sessionId: expectedSessionId,
     threadId: mapping.threadId as string | null,
   };
-  for (const field of ['mode', 'model', 'agentMode', 'effort', 'executor', 'cwd', 'title', 'updatedAt'] as const) {
+  for (const field of ['mode', 'model', 'agentMode', 'effort', 'executor', 'cwd', 'title', 'updatedAt', 'visibility'] as const) {
     const fieldValue = mapping[field];
     if (fieldValue === undefined) continue;
     if (typeof fieldValue !== 'string') {

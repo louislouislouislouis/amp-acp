@@ -13,6 +13,8 @@ export interface ExportedThread {
   messages: ExportedThreadMessage[];
   title?: string;
   updatedAt?: string;
+  /** Amp's `meta.visibility`, such as `private` or `workspace`. */
+  visibility?: string;
 }
 
 export type ThreadHistoryExporter = (
@@ -26,6 +28,7 @@ function normalizeExport(value: ExportedThreadMessage[] | ExportedThread): Expor
     messages: Array.isArray(value.messages) ? value.messages : [],
     ...(typeof value.title === 'string' ? { title: value.title } : {}),
     ...(typeof value.updatedAt === 'string' ? { updatedAt: value.updatedAt } : {}),
+    ...(typeof value.visibility === 'string' ? { visibility: value.visibility } : {}),
   };
 }
 
@@ -56,11 +59,14 @@ export const exportThreadHistory: ThreadHistoryExporter = (threadId, cwd) => {
           messages?: ExportedThreadMessage[];
           title?: unknown;
           updatedAt?: unknown;
+          meta?: { visibility?: unknown };
         };
+        const visibility = thread.meta?.visibility;
         resolve({
           messages: Array.isArray(thread.messages) ? thread.messages : [],
           ...(typeof thread.title === 'string' ? { title: thread.title } : {}),
           ...(typeof thread.updatedAt === 'string' ? { updatedAt: thread.updatedAt } : {}),
+          ...(typeof visibility === 'string' ? { visibility } : {}),
         });
       } catch (e) {
         reject(new Error(`failed to parse amp threads export output: ${e}`));

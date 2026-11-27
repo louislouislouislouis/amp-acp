@@ -170,12 +170,14 @@ describe('Binary integration tests', () => {
       'permission',
       'amp-model',
       'reasoning-effort',
+      'thread-visibility',
     ]);
     expect(configOptions.map((option) => option.category)).toEqual([
       'mode',
       'mode',
       'model',
       'thought_level',
+      undefined,
     ]);
     const executor = configOptions.find((option) => option.id === 'execution-environment')!;
     expect(executor.currentValue).toBe('local');

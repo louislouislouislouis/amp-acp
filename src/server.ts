@@ -28,14 +28,20 @@ import {
   type SessionInfo,
   type AvailableCommand,
 } from '@agentclientprotocol/sdk/unstable';
+import { randomUUID } from 'node:crypto';
 import {
+  ampThreadUrl,
   createAmpTransport,
   isAmpThreadId,
   setAmpThreadArchived,
+  setAmpThreadMultiplayer,
+  setAmpThreadVisibility,
   type AmpEffort,
   type AmpExecutionOptions,
+  type AmpMultiplayerSetting,
   type AmpPromptContent,
   type AmpThreadLifecycleOptions,
+  type AmpThreadVisibility,
   type AmpTransport,
 } from './amp-transport.js';
 import type { AcpClient } from './acp-client.js';
@@ -59,6 +65,19 @@ import {
 } from './turn-events.js';
 import { createAcpConversionState, toAcpNotifications, type AcpConversionState } from './to-acp.js';
 import { exportThreadDetails, exportThreadHistory, historyToNotifications, type ThreadHistoryExporter } from './thread-history.js';
+import {
+  VISIBILITY_DESCRIPTIONS,
+  VISIBILITY_LABELS,
+  VISIBILITY_SETTINGS,
+  describeMultiplayer,
+  isVisibilitySetting,
+  parseCollaborationCommand,
+  parseMultiplayerArgument,
+  parseShareArgument,
+  visibilityFromAmp,
+  type CollaborationCommand,
+  type VisibilitySetting,
+} from './thread-sharing.js';
 import path from 'node:path';
 import packageJson from '../package.json';
 
@@ -69,6 +88,7 @@ const CONFIG_AMP_MODEL = 'amp-model';
 const MODEL_DEFAULT_VALUE = 'default';
 const CONFIG_EXECUTOR = 'execution-environment';
 const CONFIG_REASONING_EFFORT = 'reasoning-effort';
+const CONFIG_VISIBILITY = 'thread-visibility';
 /** Maximum number of prompts accepted behind the active turn for one session. */
 const MAX_QUEUED_PROMPTS = 32;
 const MAX_SESSION_TITLE_LENGTH = 60;
@@ -192,9 +212,10 @@ const STEER_FAILED_METHOD = '_amp/session/steer_failed';
 const LEGACY_DIAL_MODES = new Set(['low', 'medium', 'high', 'ultra']);
 
 /**
- * Slash prompts supported by Amp itself, plus the adapter's own `/init`.
+ * Slash prompts supported by Amp itself, plus the adapter's own commands.
  * Amp handles `ship`, `update-base`, `refactor-commits`, and `review` when the
- * text reaches the agent; the adapter only advertises them.
+ * text reaches the agent. The adapter rewrites `/init` and runs `/share`,
+ * `/link`, and `/multiplayer` itself without an Amp turn.
  */
 const AVAILABLE_COMMANDS: AvailableCommand[] = [
   {
@@ -220,6 +241,20 @@ const AVAILABLE_COMMANDS: AvailableCommand[] = [
     name: 'refactor-commits',
     description: "Restack and refactor the branch's commits with Amp's refactor-commits prompt",
     input: { hint: 'optional refactor instructions' },
+  },
+  {
+    name: 'share',
+    description: 'Set who can see this Amp thread and post its link (default: workspace)',
+    input: { hint: 'private | workspace | group | link' },
+  },
+  {
+    name: 'link',
+    description: "Post this Amp thread's link",
+  },
+  {
+    name: 'multiplayer',
+    description: 'Let workspace members join this shared Orb thread',
+    input: { hint: 'on | off | 30m | 2h | 3d' },
   },
 ];
 
@@ -277,7 +312,7 @@ const REASONING_EFFORT_DESCRIPTIONS: Record<ReasoningEffort, string> = {
 };
 
 function buildSessionConfigOptions(
-  s: Pick<SessionState, 'mode' | 'model' | 'agentMode' | 'models' | 'agentModes' | 'executor' | 'effort'>,
+  s: Pick<SessionState, 'mode' | 'model' | 'agentMode' | 'models' | 'agentModes' | 'executor' | 'effort' | 'visibility'>,
 ): SessionConfigOption[] {
   const currentModel = s.model ?? s.agentMode;
   const modelOptions: { value: string; name: string; description?: string }[] = [
@@ -367,6 +402,18 @@ function buildSessionConfigOptions(
         description: REASONING_EFFORT_DESCRIPTIONS[effort],
       })),
     },
+    {
+      type: 'select',
+      id: CONFIG_VISIBILITY,
+      name: 'Visibility',
+      description: 'Who can see the Amp thread. On an existing thread, a change runs amp threads share.',
+      currentValue: s.visibility,
+      options: VISIBILITY_SETTINGS.map((visibility) => ({
+        value: visibility,
+        name: VISIBILITY_LABELS[visibility],
+        description: VISIBILITY_DESCRIPTIONS[visibility],
+      })),
+    },
   ];
 }
 
@@ -375,6 +422,8 @@ interface ActiveTurn {
   cancelled: boolean;
   /** Send the first input of this turn with Amp's steer marker. */
   steer: boolean;
+  /** An adapter command such as `/share`; no Amp process runs. */
+  local?: boolean;
 }
 
 interface QueuedPrompt {
@@ -417,6 +466,7 @@ interface SessionState {
   agentModes: AmpModel[];
   effort: ReasoningEffort;
   executor: Executor;
+  visibility: VisibilitySetting;
   mcpConfig: AmpMcpConfig;
   cwd: string;
   title?: string;
@@ -442,9 +492,23 @@ type SetThreadArchived = (
   options?: AmpThreadLifecycleOptions,
 ) => Promise<void>;
 
+type SetThreadVisibility = (
+  threadId: string,
+  visibility: AmpThreadVisibility,
+  options?: AmpThreadLifecycleOptions,
+) => Promise<string>;
+
+type SetThreadMultiplayer = (
+  threadId: string,
+  setting: AmpMultiplayerSetting,
+  options?: AmpThreadLifecycleOptions,
+) => Promise<string>;
+
 interface AmpAcpAgentOptions {
   threadStore?: ThreadMappingStore;
   setThreadArchived?: SetThreadArchived;
+  setThreadVisibility?: SetThreadVisibility;
+  setThreadMultiplayer?: SetThreadMultiplayer;
   exportThread?: ThreadHistoryExporter;
   /** Transport used for Orb execution; defaults to the Amp SDK transport. */
   orbTransport?: AmpTransport;
@@ -462,6 +526,8 @@ export class AmpAcpAgent {
   private orbTransport: AmpTransport;
   private threadStore: ThreadMappingStore;
   private setThreadArchived: SetThreadArchived;
+  private setThreadVisibility: SetThreadVisibility;
+  private setThreadMultiplayer: SetThreadMultiplayer;
   sessions = new Map<string, SessionState>();
   private clientCapabilities?: ClientCapabilities;
 
@@ -481,6 +547,8 @@ export class AmpAcpAgent {
     this.orbTransport = options.orbTransport ?? createAmpTransport('sdk');
     this.threadStore = options.threadStore ?? new FileThreadMappingStore();
     this.setThreadArchived = options.setThreadArchived ?? setAmpThreadArchived;
+    this.setThreadVisibility = options.setThreadVisibility ?? setAmpThreadVisibility;
+    this.setThreadMultiplayer = options.setThreadMultiplayer ?? setAmpThreadMultiplayer;
     this.exportThread = options.exportThread ?? exportThreadHistory;
     this.replayRetry = options.replayRetry ?? { attempts: 5, delayMs: 2000 };
     this.discoverPluginModes = options.discoverPluginModes ?? discoverPluginModesFromDir;
@@ -558,6 +626,7 @@ export class AmpAcpAgent {
       agentModes: this.discoverPluginModes(cwd).map(agentModeToModel),
       effort: 'auto',
       executor: 'local',
+      visibility: 'default',
       mcpConfig,
       cwd,
       mcpStatuses: new Map(),
@@ -618,6 +687,9 @@ export class AmpAcpAgent {
           .trim();
         if (exportedTitle) session.title = exportedTitle;
         if (thread.updatedAt) session.updatedAt = thread.updatedAt;
+        // The thread may have been shared from ampcode.com since the last turn.
+        const exportedVisibility = visibilityFromAmp(thread.visibility);
+        if (exportedVisibility) session.visibility = exportedVisibility;
         for (const notification of historyToNotifications(thread.messages, params.sessionId, createAcpConversionState())) {
           await this.client.sessionUpdate(notification);
         }
@@ -690,6 +762,7 @@ export class AmpAcpAgent {
       agentModes,
       effort: mapping.effort && isReasoningEffort(mapping.effort) ? mapping.effort : 'auto',
       executor: mapping.executor && isExecutor(mapping.executor) ? mapping.executor : 'local',
+      visibility: mapping.visibility && isVisibilitySetting(mapping.visibility) ? mapping.visibility : 'default',
       mcpConfig: convertAcpMcpServersToAmpConfig(params.mcpServers),
       cwd,
       ...(mapping.title ? { title: mapping.title } : {}),
@@ -709,6 +782,7 @@ export class AmpAcpAgent {
       ...(s.agentMode ? { agentMode: s.agentMode } : {}),
       effort: s.effort,
       executor: s.executor,
+      ...(s.visibility !== 'default' ? { visibility: s.visibility } : {}),
       cwd: s.cwd,
       ...(s.title ? { title: s.title } : {}),
       ...(s.updatedAt ? { updatedAt: s.updatedAt } : {}),
@@ -929,6 +1003,7 @@ export class AmpAcpAgent {
   private cancelSessionTurns(s: SessionState, preserveSteering = false): void {
     if (s.active) {
       s.steerNextPrompt = preserveSteering
+        && !s.active.local
         && s.executor === 'local'
         && this.transport.supportsSteering === true;
       s.active.cancelled = true;
@@ -976,14 +1051,20 @@ export class AmpAcpAgent {
   }
 
   private startPrompt(params: PromptRequest, s: SessionState): Promise<PromptResponse> {
+    const command = parseCollaborationCommand(params.prompt);
     const turn: ActiveTurn = {
       controller: new AbortController(),
       cancelled: false,
-      steer: s.steerNextPrompt,
+      // A local command leaves a pending steer for the next Amp prompt.
+      steer: command ? false : s.steerNextPrompt,
+      ...(command ? { local: true } : {}),
     };
-    s.steerNextPrompt = false;
+    if (!command) s.steerNextPrompt = false;
     s.active = turn;
-    return this.executePrompt(params, s, turn).finally(() => {
+    const run = command
+      ? this.runCollaborationCommand(params.sessionId, s, command, turn)
+      : this.executePrompt(params, s, turn);
+    return run.finally(() => {
       if (s.active === turn) s.active = null;
       // Let the current prompt response reach the client before starting the
       // next queued turn.
@@ -1106,6 +1187,8 @@ export class AmpAcpAgent {
     } else if (process.env.AMP_ACP_CONTINUE_LATEST) {
       options.continue = true;
       console.error('[acp] AMP_ACP_CONTINUE_LATEST set; continuing latest thread on this installation');
+    } else if (s.visibility !== 'default') {
+      options.visibility = s.visibility;
     }
 
     const turnUsage = new TurnUsage();
@@ -1214,7 +1297,7 @@ export class AmpAcpAgent {
    */
   private resetCliProcessForConfigChange(sessionId: string, s: SessionState): void {
     if (this.transport.name !== 'cli' || !s.processStarted) return;
-    if (s.active && !s.active.controller.signal.aborted) {
+    if (s.active && !s.active.local && !s.active.controller.signal.aborted) {
       throw new Error('Session configuration cannot change while a prompt is active');
     }
     this.transport.closeSession?.(sessionId);
@@ -1227,6 +1310,9 @@ export class AmpAcpAgent {
     if (!s) throw new Error('Session not found');
     if (typeof params.value !== 'string') {
       throw new Error(`Unsupported value for ${params.configId}`);
+    }
+    if (params.configId === CONFIG_VISIBILITY) {
+      return { configOptions: await this.setVisibilityOption(params.sessionId, s, params.value) };
     }
 
     const next = { executor: s.executor, mode: s.mode, model: s.model, agentMode: s.agentMode, effort: s.effort };
@@ -1284,11 +1370,14 @@ export class AmpAcpAgent {
     Object.assign(s, next);
 
     await this.persistSessionQuiet(params.sessionId, s);
+    return { configOptions: await this.publishConfigOptions(params.sessionId, s) };
+  }
 
+  private async publishConfigOptions(sessionId: string, s: SessionState): Promise<SessionConfigOption[]> {
     const configOptions = buildSessionConfigOptions(s);
     try {
       await this.client.sessionUpdate({
-        sessionId: params.sessionId,
+        sessionId,
         update: {
           sessionUpdate: 'config_option_update',
           configOptions,
@@ -1297,8 +1386,171 @@ export class AmpAcpAgent {
     } catch (e) {
       console.error('[acp] failed to send config_option_update', e);
     }
+    return configOptions;
+  }
 
-    return { configOptions };
+  /**
+   * Before the thread exists, the value is a creation flag. After, it runs
+   * `amp threads share`, and a failure keeps the old value and says why.
+   */
+  private async setVisibilityOption(sessionId: string, s: SessionState, value: string): Promise<SessionConfigOption[]> {
+    if (!isVisibilitySetting(value)) {
+      throw RequestError.invalidParams(undefined, `Unsupported visibility: ${value}`);
+    }
+    if (value === s.visibility) return buildSessionConfigOptions(s);
+    if (!s.threadId) {
+      if (s.active && !s.active.local) {
+        throw RequestError.invalidParams(undefined, 'Amp is creating this thread. Change its visibility after the turn.');
+      }
+      return this.setCreationVisibility(sessionId, s, value);
+    }
+    if (value === 'default') {
+      throw RequestError.invalidParams(
+        undefined,
+        'This Amp thread already exists. Choose Private, Workspace, Group, or Link.',
+      );
+    }
+    try {
+      await this.shareThread(sessionId, s, s.threadId, value);
+    } catch (e) {
+      const detail = errorDetail(e);
+      await this.sendAdvisory(
+        sessionId,
+        'error',
+        'Could not change thread visibility',
+        `${detail}\nVisibility stays ${VISIBILITY_LABELS[s.visibility]}.`,
+      );
+      await this.publishConfigOptions(sessionId, s);
+      throw RequestError.internalError({ details: detail }, `Could not change thread visibility: ${detail}`);
+    }
+    return buildSessionConfigOptions(s);
+  }
+
+  private async setCreationVisibility(
+    sessionId: string,
+    s: SessionState,
+    value: VisibilitySetting,
+  ): Promise<SessionConfigOption[]> {
+    this.resetCliProcessForConfigChange(sessionId, s);
+    s.visibility = value;
+    await this.persistSessionQuiet(sessionId, s);
+    return this.publishConfigOptions(sessionId, s);
+  }
+
+  private async shareThread(
+    sessionId: string,
+    s: SessionState,
+    threadId: string,
+    visibility: AmpThreadVisibility,
+  ): Promise<void> {
+    const output = await this.setThreadVisibility(threadId, visibility, { cwd: s.cwd });
+    if (output) console.error(`[amp] threads share: ${output}`);
+    s.visibility = visibility;
+    await this.persistSessionQuiet(sessionId, s);
+    await this.publishConfigOptions(sessionId, s);
+  }
+
+  /** Answers `/share`, `/link`, and `/multiplayer` in the chat without an Amp turn. */
+  private async runCollaborationCommand(
+    sessionId: string,
+    s: SessionState,
+    command: CollaborationCommand,
+    turn: ActiveTurn,
+  ): Promise<PromptResponse> {
+    let text: string;
+    switch (command.name) {
+      case 'link':
+        text = this.linkReply(s, command.arg);
+        break;
+      case 'share':
+        text = await this.shareReply(sessionId, s, command.arg);
+        break;
+      case 'multiplayer':
+        text = await this.multiplayerReply(sessionId, s, command.arg);
+        break;
+    }
+    try {
+      await this.client.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: randomUUID(),
+          content: { type: 'text', text },
+        },
+      });
+    } catch (e) {
+      console.error('[acp] failed to send command reply', e);
+    }
+    return { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' };
+  }
+
+  private linkReply(s: SessionState, arg: string | undefined): string {
+    if (arg) return 'Usage: /link';
+    if (!s.threadId) return NO_THREAD_YET;
+    return `${ampThreadUrl(s.threadId)}\nVisibility: ${VISIBILITY_LABELS[s.visibility]}`;
+  }
+
+  private async shareReply(sessionId: string, s: SessionState, arg: string | undefined): Promise<string> {
+    const visibility = parseShareArgument(arg);
+    if (!visibility) return `Unknown visibility "${arg}". Use /share private, workspace, group, or link.`;
+    const label = VISIBILITY_LABELS[visibility];
+    if (!s.threadId) {
+      await this.setCreationVisibility(sessionId, s, visibility);
+      return `No Amp thread yet. Amp will create it with visibility ${label} on your first message. Run /link after that.`;
+    }
+    try {
+      await this.shareThread(sessionId, s, s.threadId, visibility);
+    } catch (e) {
+      return `Could not share the thread: ${errorDetail(e)}\nVisibility stays ${VISIBILITY_LABELS[s.visibility]}.`;
+    }
+    return `Visibility: ${label}\n${ampThreadUrl(s.threadId)}`;
+  }
+
+  private async multiplayerReply(sessionId: string, s: SessionState, arg: string | undefined): Promise<string> {
+    const setting = parseMultiplayerArgument(arg);
+    if (!setting) {
+      return 'Usage: /multiplayer on | off | <duration>, such as 30m, 2h, or 3d (5 minutes to 7 days).';
+    }
+    if (s.executor !== 'orb') {
+      return 'Multiplayer works only on Orb threads. This session runs locally.';
+    }
+    if (!s.threadId) return NO_THREAD_YET;
+    if (setting.enabled) {
+      const visibility = s.visibility === 'default'
+        ? await this.readThreadVisibility(sessionId, s, s.threadId)
+        : s.visibility;
+      if (visibility === 'private') {
+        return 'This thread is private. Share it first, for example with /share workspace.';
+      }
+    }
+    try {
+      const output = await this.setThreadMultiplayer(s.threadId, setting, { cwd: s.cwd });
+      if (output) console.error(`[amp] threads share multiplayer: ${output}`);
+    } catch (e) {
+      return `Could not change multiplayer: ${errorDetail(e)}`;
+    }
+    return `${describeMultiplayer(setting)}\n${ampThreadUrl(s.threadId)}`;
+  }
+
+  /** Best effort: an unknown visibility lets Amp decide whether multiplayer applies. */
+  private async readThreadVisibility(
+    sessionId: string,
+    s: SessionState,
+    threadId: string,
+  ): Promise<AmpThreadVisibility | undefined> {
+    try {
+      const thread = await exportThreadDetails(this.exportThread, threadId, s.cwd, 1, 0);
+      const visibility = visibilityFromAmp(thread.visibility);
+      if (visibility && visibility !== s.visibility) {
+        s.visibility = visibility;
+        await this.persistSessionQuiet(sessionId, s);
+        await this.publishConfigOptions(sessionId, s);
+      }
+      return visibility;
+    } catch (e) {
+      console.error('[acp] failed to read thread visibility', e);
+      return undefined;
+    }
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
@@ -1440,6 +1692,7 @@ export class AmpAcpAgent {
 }
 
 const MAX_ERROR_DETAIL_LENGTH = 2_000;
+const NO_THREAD_YET = 'No Amp thread yet. Amp creates it with your first message. Run this command again after that.';
 
 function errorDetail(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);

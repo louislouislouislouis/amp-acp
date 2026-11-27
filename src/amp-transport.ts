@@ -61,6 +61,13 @@ export type AmpMode = string & {};
  */
 export type AmpEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
+/** `unlisted` is Amp's "anyone with the link" level. */
+export type AmpThreadVisibility = 'private' | 'unlisted' | 'workspace' | 'group';
+
+export type AmpMultiplayerSetting =
+  | { enabled: false }
+  | { enabled: true; duration?: { unit: 'minutes' | 'hours' | 'days' | 'weeks'; value: number } };
+
 export interface AmpExecutionOptions {
   cwd: string;
   env?: Record<string, string>;
@@ -76,6 +83,8 @@ export interface AmpExecutionOptions {
   dangerouslyAllowAll?: boolean;
   mcpConfig?: AmpMcpConfig;
   continue?: boolean | string;
+  /** Visibility of a new thread; never sent when continuing one. */
+  visibility?: AmpThreadVisibility;
 }
 
 export interface AmpStreamMessage {
@@ -145,21 +154,66 @@ export function buildAmpArchiveArgs(threadId: string, archived: boolean): string
     : ['threads', 'archive', '--unarchive', threadId];
 }
 
+export function buildAmpShareArgs(threadId: string, visibility: AmpThreadVisibility): string[] {
+  if (!isAmpThreadId(threadId)) {
+    throw new Error(`Invalid Amp thread ID: ${threadId}`);
+  }
+  return ['threads', 'share', threadId, '--visibility', visibility];
+}
+
+export function buildAmpMultiplayerArgs(threadId: string, setting: AmpMultiplayerSetting): string[] {
+  if (!isAmpThreadId(threadId)) {
+    throw new Error(`Invalid Amp thread ID: ${threadId}`);
+  }
+  if (!setting.enabled) return ['threads', 'share', 'multiplayer', 'off', threadId];
+  if (!setting.duration) return ['threads', 'share', 'multiplayer', 'on', threadId];
+  return [
+    'threads', 'share', 'multiplayer', 'ttl', threadId,
+    `--${setting.duration.unit}`, String(setting.duration.value),
+  ];
+}
+
+/** Web URL of a thread; `AMP_URL` points at a non-default Amp server. */
+export function ampThreadUrl(threadId: string): string {
+  const base = (process.env.AMP_URL?.trim() || 'https://ampcode.com').replace(/\/+$/, '');
+  return `${base}/threads/${threadId}`;
+}
+
 export async function setAmpThreadArchived(
   threadId: string,
   archived: boolean,
   options: AmpThreadLifecycleOptions = {},
 ): Promise<void> {
+  await runAmpThreadCommand(buildAmpArchiveArgs(threadId, archived), options);
+}
+
+/** Returns Amp's stdout so callers can show its confirmation. */
+export function setAmpThreadVisibility(
+  threadId: string,
+  visibility: AmpThreadVisibility,
+  options: AmpThreadLifecycleOptions = {},
+): Promise<string> {
+  return runAmpThreadCommand(buildAmpShareArgs(threadId, visibility), options);
+}
+
+export function setAmpThreadMultiplayer(
+  threadId: string,
+  setting: AmpMultiplayerSetting,
+  options: AmpThreadLifecycleOptions = {},
+): Promise<string> {
+  return runAmpThreadCommand(buildAmpMultiplayerArgs(threadId, setting), options);
+}
+
+async function runAmpThreadCommand(args: string[], options: AmpThreadLifecycleOptions): Promise<string> {
   const command = options.command ?? process.env.AMP_CLI_PATH ?? 'amp';
-  const child = spawn(command, [
-    ...(options.commandArgs ?? []),
-    ...buildAmpArchiveArgs(threadId, archived),
-  ], {
+  const child = spawn(command, [...(options.commandArgs ?? []), ...args], {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
   child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
 
   const { code, processSignal } = await new Promise<{
@@ -177,6 +231,7 @@ export async function setAmpThreadArchived(
     const details = Buffer.concat(stderr).toString().trim();
     throw new Error(`Amp CLI process exited with code ${code}${details ? `: ${details}` : ''}`);
   }
+  return Buffer.concat(stdout).toString().trim();
 }
 
 const sdkTransport: AmpTransport = {
@@ -217,6 +272,7 @@ export function buildAmpSdkOptions(options: AmpExecutionOptions): AmpOptions {
     dangerouslyAllowAll: options.dangerouslyAllowAll,
     mcpConfig: options.mcpConfig,
     continue: options.continue,
+    ...(options.visibility && !options.continue ? { visibility: options.visibility } : {}),
   };
 }
 
@@ -239,6 +295,8 @@ export function buildAmpCliArgs(options: AmpExecutionOptions): string[] {
     args.push('--stream-json-input');
   }
   args.push('--no-archive-after-execute');
+  // On `threads continue`, --visibility could silently re-share an existing thread.
+  if (options.visibility && !options.continue) args.push('--visibility', options.visibility);
   if (options.agentMode) args.push('--mode', options.agentMode);
   if (options.model) args.push('--model', options.model);
   if (options.effort) args.push('--features', `effort:${options.effort}`);

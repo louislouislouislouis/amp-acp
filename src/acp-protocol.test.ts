@@ -265,18 +265,20 @@ describe('ACP Protocol End-to-End', () => {
     expect(response.sessionId).toMatch(/^S-/);
     expect(response.models).toBeUndefined();
     expect(response.modes).toBeUndefined();
-    expect(response.configOptions).toHaveLength(4);
+    expect(response.configOptions).toHaveLength(5);
     expect(response.configOptions?.map((option) => option.id)).toEqual([
       'execution-environment',
       'permission',
       'amp-model',
       'reasoning-effort',
+      'thread-visibility',
     ]);
     expect(response.configOptions?.map((option) => option.category)).toEqual([
       'mode',
       'mode',
       'model',
       'thought_level',
+      undefined,
     ]);
     expect(response.configOptions?.find((option) => option.id === 'execution-environment')).toMatchObject({
       currentValue: 'local',
@@ -314,7 +316,7 @@ describe('ACP Protocol End-to-End', () => {
       value: 'anthropic/claude-opus-5-5',
     });
 
-    expect(result.configOptions).toHaveLength(4);
+    expect(result.configOptions).toHaveLength(5);
     expect(result.configOptions.find((option) => option.id === 'amp-model')).toMatchObject({
       currentValue: 'anthropic/claude-opus-5-5',
     });
@@ -499,6 +501,9 @@ describe('ACP Protocol End-to-End', () => {
       'ship',
       'update-base',
       'refactor-commits',
+      'share',
+      'link',
+      'multiplayer',
     ]);
   });
 

@@ -113,7 +113,8 @@ Clients that advertise `clientCapabilities.auth.terminal: true` receive a standa
 - **Prompt queue** — concurrent prompts for one session are serialized, and `session/cancel` cancels both the active turn and queued prompts
 - **Experimental ACP v2** — set `AMP_ACP_PROTOCOL=v2` to serve the v2 draft instead of v1. The bridge returns `messageId` immediately, streams `state_update` transitions, and translates v1 plan and tool-call updates to v2 shapes
 - **Steering extension** — clients that support `_amp/session/steer` can add a message to a running session; it is delivered as the next turn
-- **Slash commands** — `/init` generates an `AGENTS.md`; Amp's built-in `/review`, `/ship`, `/update-base`, and `/refactor-commits` prompts are advertised and passed through unchanged
+- **Slash commands** — `/init` generates an `AGENTS.md`; Amp's built-in `/review`, `/ship`, `/update-base`, and `/refactor-commits` prompts are advertised and passed through unchanged; `/share`, `/link`, and `/multiplayer` run in the adapter without an Amp turn
+- **Thread sharing** — a **Visibility** config option and the `/share` command set who can see the Amp thread; `/link` posts its URL; `/multiplayer` opens a shared Orb thread to workspace members
 - **Conversation continuity** — Thread context is preserved across multiple prompts within a session
 - **Session resume** — `session/load` reattaches to the underlying Amp thread after amp-acp restarts, so ACP clients can reopen earlier sessions
 - **Session metadata** — each session publishes a title derived from the first prompt (60 characters, whitespace collapsed) and an `updatedAt` timestamp after every turn via `session_info_update`; both are persisted with the session mapping and restored on load or resume
@@ -154,7 +155,7 @@ Image turns use these CLI routes even with `AMP_ACP_TRANSPORT=sdk`: the pinned S
 
 Amp's streamed `session_id` is a durable `T-...` thread ID, distinct from amp-acp's `S-...` ACP session ID. amp-acp persists that exact mapping under `$XDG_STATE_HOME/amp-acp/sessions` (or `$AMP_ACP_STATE_DIR/sessions`) so `session/resume`, `session/load`, and native archival remain safe after adapter restarts. It never reconstructs the relationship from a working directory, title, timestamp, or thread listing.
 
-Mappings are small JSON records written atomically to an owner-only state directory (`0700`) with owner-only files (`0600`). They contain the ACP session ID, Amp thread ID, and the session's permission mode, Amp mode, reasoning effort, and working directory — never prompts, responses, or credentials.
+Mappings are small JSON records written atomically to an owner-only state directory (`0700`) with owner-only files (`0600`). They contain the ACP session ID, Amp thread ID, and the session's permission mode, Amp mode, reasoning effort, thread visibility, and working directory — never prompts, responses, or credentials.
 
 Compatible ACP clients can detect protocol revision 1 at `agentCapabilities._meta["amp-acp/thread-lifecycle"]` and use these custom methods:
 
@@ -174,6 +175,32 @@ By default, Amp infers the project from the Git remotes of the directory supplie
 Permissions, MCP servers, skills, and enabled tools supplied by the local client do not apply inside an Orb. Configure them on the Amp project instead. Authentication must have access to Amp Orbs and to the selected project.
 
 A gated live end-to-end test exercises this path against a real Amp account: `AMP_ACP_ORB_LIVE_E2E=1 bun run test:e2e:orb`. It creates a session in this repository, switches the execution environment to Orb, and runs one turn with Amp's default model. It consumes Amp credits and requires orb access to the project inferred from the git remote.
+
+### Thread sharing and multiplayer
+
+The **Visibility** config option sets who can see the Amp thread:
+
+| Value | Amp visibility |
+|---|---|
+| *Amp default* | No flag. Amp applies your own default. This is the starting value, so existing sessions keep today's behavior |
+| *Private* | `private` |
+| *Workspace* | `workspace` |
+| *Group* | `group` |
+| *Link* | `unlisted`: anyone with the link |
+
+Before the first turn, the value is a creation flag: amp-acp adds `--visibility <value>` to the CLI or SDK call that creates the thread. It never sends the flag when it continues a thread. After the thread exists, a change runs `amp threads share <thread-id> --visibility <value>`. If Amp refuses, the option keeps its old value, amp-acp sends an error notice, and the request fails with Amp's message. *Amp default* cannot be chosen once the thread exists.
+
+The value is saved with the session. On `session/load`, the visibility in `amp threads export` wins, so a thread shared from ampcode.com shows its real level.
+
+Three adapter commands answer in the chat without starting an Amp turn:
+
+- `/share [private|workspace|group|link]` sets the visibility (default: `workspace`) and posts the thread URL. Before the first turn, it only sets the creation flag and says that no thread exists yet.
+- `/link` posts the thread URL and its visibility, or says that no thread exists yet.
+- `/multiplayer [on|off|<duration>]` runs `amp threads share multiplayer on|off|ttl` so workspace members can contribute. Durations look like `30m`, `2h`, `3d`, or `1w`, from 5 minutes to 7 days; `on` uses Amp's default window. It refuses local sessions, sessions without a thread, and private threads. When the visibility is *Amp default*, amp-acp reads it from `amp threads export` first.
+
+A command must be the whole prompt, with at most one argument. Longer text such as `/share workspace and explain` goes to Amp unchanged. Commands wait in the prompt queue like other prompts. They do not appear in Amp's thread history, so `session/load` does not replay them.
+
+Thread URLs use `https://ampcode.com/threads/<thread-id>`, or `$AMP_URL/threads/<thread-id>` when `AMP_URL` is set.
 
 ### Continuing the latest thread on session start
 
@@ -303,8 +330,11 @@ amp-acp advertises these ACP commands through `available_commands_update`:
 | `/ship` | Amp's built-in ship prompt: commit, push, and open or update a pull request |
 | `/update-base` | Amp's built-in prompt to rebase the current branch onto its base |
 | `/refactor-commits` | Amp's built-in prompt to restack and refactor the branch's commits |
+| `/share` | Adapter command: set the thread visibility and post its link. See [Thread sharing and multiplayer](#thread-sharing-and-multiplayer) |
+| `/link` | Adapter command: post the thread link |
+| `/multiplayer` | Adapter command: let workspace members join a shared Orb thread |
 
-Amp's built-ins require the text to reach the agent, so amp-acp passes `/review`, `/ship`, `/update-base`, and `/refactor-commits` through unchanged. `/init` is the only command the adapter rewrites. Text after a built-in command name is forwarded as-is, which matches Amp's own command input handling.
+Amp's built-ins require the text to reach the agent, so amp-acp passes `/review`, `/ship`, `/update-base`, and `/refactor-commits` through unchanged. `/init` is the only command the adapter rewrites. `/share`, `/link`, and `/multiplayer` never reach Amp. Text after a built-in command name is forwarded as-is, which matches Amp's own command input handling.
 
 ### Experimental ACP v2
 
