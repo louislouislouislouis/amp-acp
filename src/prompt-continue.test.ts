@@ -25,6 +25,8 @@ const [{ AmpAcpAgent }, { createAmpTransport }] = await Promise.all([
   import('./amp-transport.js'),
 ]);
 
+const noDiscovery = { discoverModels: () => [], discoverPluginModes: () => [] };
+
 const mockClient = {
   sessionUpdate: async () => {},
   readTextFile: async () => ({ text: '' }),
@@ -138,7 +140,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
         yield { type: 'result', subtype: 'success', is_error: false };
       },
     };
-    agent = new AmpAcpAgent(mockClient, transport);
+    agent = new AmpAcpAgent(mockClient, transport, noDiscovery);
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
     await agent.prompt({
       sessionId: session.sessionId,
@@ -163,7 +165,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
         throw new Error('Amp CLI prompt was cancelled');
       },
     };
-    agent = new AmpAcpAgent(mockClient, transport);
+    agent = new AmpAcpAgent(mockClient, transport, noDiscovery);
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
     const prompt = agent.prompt({
       sessionId: session.sessionId,
@@ -264,7 +266,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
         yield { type: 'result', subtype: 'success', is_error: false };
       },
     };
-    agent = new AmpAcpAgent(mockClient, transport);
+    agent = new AmpAcpAgent(mockClient, transport, noDiscovery);
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
     const firstPrompt = agent.prompt({
       sessionId: session.sessionId,
@@ -300,7 +302,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
         yield { type: 'result', subtype: 'success', is_error: false };
       },
     };
-    agent = new AmpAcpAgent(mockClient, transport);
+    agent = new AmpAcpAgent(mockClient, transport, noDiscovery);
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
     const firstPrompt = agent.prompt({
       sessionId: session.sessionId,
@@ -336,7 +338,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
         throw new Error('Amp CLI prompt was cancelled');
       },
     };
-    agent = new AmpAcpAgent(mockClient, transport);
+    agent = new AmpAcpAgent(mockClient, transport, noDiscovery);
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
     const firstPrompt = agent.prompt({
       sessionId: session.sessionId,
@@ -652,6 +654,7 @@ describe('AmpAcpAgent prompt() continue option', () => {
       },
     };
     agent = new AmpAcpAgent(mockClient, transport, {
+      ...noDiscovery,
       threadStore: {
         load: async (sessionId) => mappings.get(sessionId) ?? null,
         save: async (mapping) => {

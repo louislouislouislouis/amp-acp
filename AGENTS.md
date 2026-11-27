@@ -34,6 +34,7 @@ This is an ACP (Agent Client Protocol) adapter that bridges Amp Code to ACP-comp
 - Error handling: throw `RequestError` from `@agentclientprotocol/sdk` for protocol errors
 - Naming: camelCase for variables/functions, PascalCase for classes/interfaces
 - Tests: `bunfig.toml` preloads `test/preload.ts`, which points `AMP_ACP_STATE_DIR` at a temp dir for every `bun test` run. A test that overrides it must restore the old value, not delete it
+- Tests: unit tests that build `AmpAcpAgent` inject `discoverModels` and `discoverPluginModes`, so they never spawn the real `amp` CLI
 
 ## Update Protocol
 

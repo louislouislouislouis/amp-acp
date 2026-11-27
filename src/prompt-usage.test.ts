@@ -49,6 +49,8 @@ describe('AmpAcpAgent prompt() usage', () => {
           mappings.set(mapping.sessionId, mapping);
         },
       },
+      discoverModels: () => [],
+      discoverPluginModes: () => [],
     });
     await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
     const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });

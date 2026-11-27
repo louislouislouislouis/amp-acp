@@ -5,6 +5,7 @@
 ### Tests
 
 - Point `AMP_ACP_STATE_DIR` at a temporary directory for every `bun test` run (`test/preload.ts`, loaded by `bunfig.toml`). Unit and binary tests no longer leave session files in `~/.local/state/amp-acp`.
+- Stub model and plugin-mode discovery in unit tests that built an agent without it. `bun test src/` no longer runs the real `amp plugins show-agent-options` and `amp plugins list`, which could push "restarts the CLI process after a config change" past Bun's 5-second timeout.
 
 ## 0.13.0 - 2026-11-15
 
