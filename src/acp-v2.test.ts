@@ -313,6 +313,7 @@ describe('AcpV2Adapter', () => {
       stopReason: 'error',
       error: { code, message },
     });
+    expect(updates.filter(({ update }) => update.sessionUpdate === 'notice')).toEqual([]);
   });
 
   test('deletes a session, its mapping, and its CLI process', async () => {

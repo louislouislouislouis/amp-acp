@@ -296,12 +296,6 @@ export class AcpV2Adapter {
   private async failTurn(sessionId: string, error: unknown): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     await this.sendUpdate(sessionId, {
-      sessionUpdate: 'notice',
-      severity: 'error',
-      title: 'Amp request failed',
-      description: message,
-    });
-    await this.sendUpdate(sessionId, {
       sessionUpdate: 'state_update',
       state: 'idle',
       stopReason: 'error',
