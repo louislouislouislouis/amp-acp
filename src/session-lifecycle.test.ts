@@ -202,4 +202,35 @@ describe('session list, delete, and close', () => {
     await expect(queued).resolves.toEqual({ stopReason: 'cancelled' });
     expect((await agent.listSessions({})).sessions).toEqual([]);
   });
+
+  it('keeps a busy session on resume so cancel still reaches its turn', async () => {
+    let started!: () => void;
+    const turnStarted = new Promise<void>((resolve) => { started = resolve; });
+    const slow: AmpTransport = {
+      name: 'cli',
+      async *execute({ signal }): AsyncIterable<AmpStreamMessage> {
+        yield { type: 'system', subtype: 'init', session_id: threadId };
+        started();
+        await new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const agent = createAgent(slow);
+    await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    const active = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: 'text', text: 'active' }],
+    });
+    await turnStarted;
+    const live = agent.sessions.get(session.sessionId);
+
+    await agent.resumeSession({ sessionId: session.sessionId, cwd: '/tmp', mcpServers: [] });
+    expect(agent.sessions.get(session.sessionId)).toBe(live);
+
+    await agent.cancel({ sessionId: session.sessionId });
+    await expect(active).resolves.toEqual({ stopReason: 'cancelled' });
+  });
 });

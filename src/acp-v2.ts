@@ -2,6 +2,8 @@ import {
   AGENT_METHODS,
   CLIENT_METHODS,
   PROTOCOL_VERSION,
+  ReplayFrom,
+  RequestError,
   type AgentApp,
   type AgentConnection,
   agent,
@@ -24,6 +26,7 @@ import { AmpAcpAgent, preparePrompt } from './server.js';
 
 const PACKAGE_VERSION: string = packageJson.version;
 const PLAN_ID = 'amp-plan';
+const INTERNAL_ERROR = -32603;
 
 function toAcpV2ConfigOptions(
   options: NewSessionResponse['configOptions'],
@@ -99,14 +102,15 @@ export class AcpV2Adapter {
   private readonly app: AgentApp;
   private connection?: AgentConnection;
   private readonly inner: AmpAcpAgent;
-  private readonly inflightBySession = new Map<string, number>();
+  /** Turns not yet reported idle. Each promise settles after its final state update. */
+  private readonly turnsBySession = new Map<string, Set<Promise<void>>>();
 
-  constructor() {
+  constructor(createAgent: (client: AcpClient) => AmpAcpAgent = (client) => new AmpAcpAgent(client)) {
     const fakeClient: AcpClient = {
       sessionUpdate: (notification) => this.sendV1Notification(notification),
       notify: async () => {},
     };
-    this.inner = new AmpAcpAgent(fakeClient);
+    this.inner = createAgent(fakeClient);
     this.app = agent()
       .onConnect((connection) => {
         this.connection = connection;
@@ -115,6 +119,7 @@ export class AcpV2Adapter {
       .onRequest(AGENT_METHODS.session_new, ({ params }) => this.newSession(params))
       .onRequest(AGENT_METHODS.session_resume, ({ params }) => this.resumeSession(params))
       .onRequest(AGENT_METHODS.session_close, ({ params }) => this.closeSession(params))
+      .onRequest(AGENT_METHODS.session_delete, ({ params }) => this.deleteSession(params))
       .onRequest(AGENT_METHODS.session_list, ({ params }) => this.inner.listSessions(params))
       .onRequest(AGENT_METHODS.session_set_config_option, ({ params }) => this.setConfigOption(params))
       .onRequest(AGENT_METHODS.session_prompt, ({ params }) => this.prompt(params))
@@ -150,6 +155,7 @@ export class AcpV2Adapter {
               : {}),
             stdio: {},
           },
+          delete: {},
         },
       },
       authMethods: response.authMethods?.flatMap((method) => {
@@ -182,17 +188,41 @@ export class AcpV2Adapter {
   }
 
   private async resumeSession(request: v2.ResumeSessionRequest): Promise<v2.ResumeSessionResponse> {
-    const session = await this.inner.resumeSession({
-      sessionId: request.sessionId,
-      cwd: request.cwd,
-      mcpServers: toV1McpServers(request.mcpServers),
-    });
+    const replayFrom = request.replayFrom ?? null;
+    if (replayFrom && !ReplayFrom.isStart(replayFrom)) {
+      throw RequestError.invalidParams(undefined, `Unsupported replayFrom cursor: ${JSON.stringify(replayFrom)}`);
+    }
+    const session = await this.inner.resumeSession(
+      {
+        sessionId: request.sessionId,
+        cwd: request.cwd,
+        mcpServers: toV1McpServers(request.mcpServers),
+      },
+      replayFrom
+        ? { replay: (notification) => this.sendUpdate(notification.sessionId, toAcpV2Update(notification.update)) }
+        : {},
+    );
+    // v2 requires a state snapshot before the resume response.
+    await this.sendUpdate(
+      request.sessionId,
+      this.turnsBySession.has(request.sessionId)
+        ? { sessionUpdate: 'state_update', state: 'running' }
+        : { sessionUpdate: 'state_update', state: 'idle' },
+    );
     return { configOptions: toAcpV2ConfigOptions(session.configOptions) };
   }
 
+  /** v2 requires the cancelled turns' final updates before the close response. */
   private async closeSession(request: v2.CloseSessionRequest): Promise<void> {
-    await this.inner.cancel({ sessionId: request.sessionId } as CancelNotification);
-    this.inner.sessions.delete(request.sessionId);
+    const turns = [...(this.turnsBySession.get(request.sessionId) ?? [])];
+    await this.inner.closeSession({ sessionId: request.sessionId });
+    await Promise.all(turns);
+  }
+
+  private async deleteSession(request: v2.DeleteSessionRequest): Promise<void> {
+    const turns = [...(this.turnsBySession.get(request.sessionId) ?? [])];
+    await this.inner.deleteSession({ sessionId: request.sessionId });
+    await Promise.all(turns);
   }
 
   private async setConfigOption(
@@ -208,71 +238,70 @@ export class AcpV2Adapter {
     preparePrompt(prompt);
     const messageId = messageIdFor(request.sessionId);
     const text = textFromPrompt(prompt);
-    this.inflightBySession.set(request.sessionId, (this.inflightBySession.get(request.sessionId) ?? 0) + 1);
 
     // v2 returns immediately; the turn runs in the background and reports its
     // state through session/update notifications.
-    await this.sendUpdate(request.sessionId, {
+    const started = this.sendUpdate(request.sessionId, {
       sessionUpdate: 'user_message_chunk',
       messageId,
       content: { type: 'text', text },
-    });
-    await this.sendUpdate(request.sessionId, { sessionUpdate: 'state_update', state: 'running' });
-
-    void this.inner
-      .prompt({
-        sessionId: request.sessionId,
-        prompt: request.prompt as unknown as PromptRequest['prompt'],
-      })
+    }).then(() => this.sendUpdate(request.sessionId, { sessionUpdate: 'state_update', state: 'running' }));
+    const turn = started
+      .then(() => this.inner.prompt({ sessionId: request.sessionId, prompt }))
       .then(
         (response) => this.finishTurn(request.sessionId, response.stopReason, response.usage),
         (error: unknown) => this.failTurn(request.sessionId, error),
       );
+    this.trackTurn(request.sessionId, turn);
+    await started;
 
     return { messageId };
+  }
+
+  private trackTurn(sessionId: string, turn: Promise<void>): void {
+    const turns = this.turnsBySession.get(sessionId) ?? new Set<Promise<void>>();
+    turns.add(turn);
+    this.turnsBySession.set(sessionId, turns);
+    void turn.finally(() => {
+      turns.delete(turn);
+      if (turns.size === 0 && this.turnsBySession.get(sessionId) === turns) {
+        this.turnsBySession.delete(sessionId);
+      }
+    });
   }
 
   private async cancel(request: v2.CancelSessionNotification): Promise<void> {
     await this.inner.cancel({ sessionId: request.sessionId } as CancelNotification);
   }
 
-  private finishTurn(
+  private async finishTurn(
     sessionId: string,
     stopReason: PromptResponse['stopReason'],
     usage: PromptResponse['usage'],
-  ): void {
+  ): Promise<void> {
     // SDK 1.9 narrows the v2 idle state union separately from the v1 stop reason.
-    void this.sendUpdate(sessionId, {
+    await this.sendUpdate(sessionId, {
       sessionUpdate: 'state_update',
       state: 'idle',
       stopReason,
       usage: usage as unknown as v2.Usage,
-    } as v2.SessionUpdate).finally(() => this.releaseTurn(sessionId));
+    } as v2.SessionUpdate);
   }
 
-  private failTurn(sessionId: string, error: unknown): void {
+  private async failTurn(sessionId: string, error: unknown): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
-    void this.sendUpdate(sessionId, {
+    await this.sendUpdate(sessionId, {
       sessionUpdate: 'notice',
       severity: 'error',
       title: 'Amp request failed',
       description: message,
-    }).finally(() => {
-      void this.sendUpdate(sessionId, {
-        sessionUpdate: 'state_update',
-        state: 'idle',
-        stopReason: 'refusal',
-      }).finally(() => this.releaseTurn(sessionId));
     });
-  }
-
-  private releaseTurn(sessionId: string): void {
-    const next = (this.inflightBySession.get(sessionId) ?? 1) - 1;
-    if (next <= 0) {
-      this.inflightBySession.delete(sessionId);
-    } else {
-      this.inflightBySession.set(sessionId, next);
-    }
+    await this.sendUpdate(sessionId, {
+      sessionUpdate: 'state_update',
+      state: 'idle',
+      stopReason: 'error',
+      error: { code: error instanceof RequestError ? error.code : INTERNAL_ERROR, message },
+    });
   }
 
   private async sendV1Notification(notification: SessionNotification): Promise<void> {

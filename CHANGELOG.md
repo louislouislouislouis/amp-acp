@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- ACP v2 bridge: register `session/delete` and advertise `capabilities.session.delete`.
+- ACP v2 bridge: `session/resume` with `replayFrom: { "type": "start" }` replays the full thread history, like v1 `session/load`.
+
+### Fixed
+
+- ACP v2 bridge: `session/resume` rejects unsupported `replayFrom` cursors with `-32602`, and always sends a `running` or `idle` `state_update` before responding.
+- ACP v2 bridge: a failed turn ends with `stopReason: "error"` and an `error` object instead of `refusal`.
+- ACP v2 bridge: `session/close` closes the Amp CLI process and sends the cancelled turn's final updates before responding.
+- Resuming a session with a running or queued turn keeps the live session, so cancel and close still reach the turn.
+
 ## 0.13.0 - 2026-11-15
 
 ### Changed

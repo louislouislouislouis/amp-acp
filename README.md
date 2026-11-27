@@ -205,6 +205,8 @@ amp-acp advertises `sessionCapabilities.list`, `delete`, `close`, and `resume`.
 
 Deleting a session also makes later `session/load` and `session/resume` calls fail with an unknown-session error until a new mapping is created.
 
+Resuming a session while a turn is running or prompts are queued keeps that live session, so `session/cancel` and `session/close` still reach the turn.
+
 ### Amp execution transport
 
 By default, amp-acp executes the installed Amp CLI directly through its streaming JSON interface. Set `AMP_ACP_TRANSPORT=sdk` to use `@ampcode/sdk` as a compatibility fallback. Both transports accept plugin agent modes (see below). Explicit model selections and image turns use the CLI even with the SDK transport, including Orb sessions, because the pinned SDK has no `--model` option and cannot stream image input.
@@ -320,9 +322,13 @@ The v2 adapter keeps the existing session, model, queue, and Amp transport behav
 - `session/prompt` returns `messageId` immediately and reports the background turn through `state_update` (`running` then `idle`).
 - Client config options are exposed as v2 `configId` fields.
 - v1 `plan` updates become v2 `plan_update`; v1 `tool_call` updates become v2 `tool_call_update`.
-- `session/resume`, `session/close`, `session/list`, and `session/set_config_option` forward to the existing implementation. Listing discovers adapter-persisted sessions, with working-directory filtering, titles, timestamps, and cursor pagination; it does not enumerate all Amp account threads.
+- `session/resume` honors `replayFrom`. `{ "type": "start" }` replays the full Amp thread history, like v1 `session/load`. Omitted or `null` resumes without replay. Other cursor types return `-32602`. Every resume sends a `state_update` before the response: `running` if a turn is in progress, else `idle`.
+- `session/close` cancels the session's turns, sends their final updates and the idle `cancelled` state, closes the Amp CLI process, and then responds.
+- `session/delete` is advertised through `capabilities.session.delete`. It works like v1 delete: it cancels turns, closes the CLI process, and removes the local mapping.
+- A failed turn ends with an idle `state_update` that has `stopReason: "error"` and an `error` object (`code`, `message`), after an error notice.
+- `session/list` and `session/set_config_option` forward to the existing implementation. Listing discovers adapter-persisted sessions, with working-directory filtering, titles, timestamps, and cursor pagination; it does not enumerate all Amp account threads.
 
-v1 remains the default and is unchanged for Zed, Lody, and other clients that negotiate ACP v1. The v2 adapter is a compatibility bridge, not yet a native v2 implementation: Amp's internal queue and cancellation still drive turns, and there is no v2-native steering or persisted plan identity. The v2 bridge does not register or advertise the v1 `amp-acp/thread-lifecycle` and `amp-acp/steering` extensions. Execution failures use its existing error-notice and idle-state path with stop reason `refusal`; `session/prompt` still returns a `messageId` immediately.
+v1 remains the default and is unchanged for Zed, Lody, and other clients that negotiate ACP v1. The v2 adapter is a compatibility bridge, not yet a native v2 implementation: Amp's internal queue and cancellation still drive turns, and there is no v2-native steering or persisted plan identity. The v2 bridge does not register or advertise the v1 `amp-acp/thread-lifecycle` and `amp-acp/steering` extensions. `session/prompt` still returns a `messageId` immediately.
 
 ## MCP Configuration Passthrough
 

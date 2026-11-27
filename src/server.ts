@@ -26,6 +26,7 @@ import {
   type CloseSessionRequest,
   type CloseSessionResponse,
   type SessionInfo,
+  type SessionNotification,
   type AvailableCommand,
 } from '@agentclientprotocol/sdk/unstable';
 import {
@@ -603,29 +604,7 @@ export class AmpAcpAgent {
     }
 
     if (session.threadId) {
-      try {
-        const thread = await exportThreadDetails(
-          this.exportThread,
-          session.threadId,
-          session.cwd,
-          this.replayRetry.attempts,
-          this.replayRetry.delayMs,
-        );
-        const exportedTitle = thread.title
-          ?.replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, MAX_SESSION_TITLE_LENGTH)
-          .trim();
-        if (exportedTitle) session.title = exportedTitle;
-        if (thread.updatedAt) session.updatedAt = thread.updatedAt;
-        for (const notification of historyToNotifications(thread.messages, params.sessionId, createAcpConversionState())) {
-          await this.client.sessionUpdate(notification);
-        }
-      } catch (e) {
-        // History replay is best-effort: the thread still continues correctly
-        // without it, so a failed export must not fail the load.
-        console.error('[acp] failed to replay thread history', e);
-      }
+      await this.replayThread(params.sessionId, session, (notification) => this.client.sessionUpdate(notification));
       await this.publishSessionInfo(params.sessionId, session);
     }
 
@@ -646,6 +625,38 @@ export class AmpAcpAgent {
     return {
       configOptions: buildSessionConfigOptions(session),
     };
+  }
+
+  /** Sends the Amp thread's history through `send` and refreshes the title and timestamp from the export. */
+  private async replayThread(
+    sessionId: string,
+    session: SessionState,
+    send: (notification: SessionNotification) => Promise<void>,
+  ): Promise<void> {
+    if (!session.threadId) return;
+    try {
+      const thread = await exportThreadDetails(
+        this.exportThread,
+        session.threadId,
+        session.cwd,
+        this.replayRetry.attempts,
+        this.replayRetry.delayMs,
+      );
+      const exportedTitle = thread.title
+        ?.replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, MAX_SESSION_TITLE_LENGTH)
+        .trim();
+      if (exportedTitle) session.title = exportedTitle;
+      if (thread.updatedAt) session.updatedAt = thread.updatedAt;
+      for (const notification of historyToNotifications(thread.messages, sessionId, createAcpConversionState())) {
+        await send(notification);
+      }
+    } catch (e) {
+      // History replay is best-effort: the thread still continues correctly
+      // without it, so a failed export must not fail the load.
+      console.error('[acp] failed to replay thread history', e);
+    }
   }
 
   private sessionFromMapping(
@@ -750,13 +761,20 @@ export class AmpAcpAgent {
     throw RequestError.authRequired();
   }
 
-  async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+  /** `replay` receives the thread history before the session info update; v1 resume omits it. */
+  async resumeSession(
+    params: ResumeSessionRequest,
+    options: { replay?: (notification: SessionNotification) => Promise<void> } = {},
+  ): Promise<ResumeSessionResponse> {
     const mapping = await this.threadStore.load(params.sessionId);
     if (!mapping) {
       throw RequestError.invalidParams(undefined, `No durable Amp thread mapping for ACP session ${params.sessionId}`);
     }
-    const session = this.sessionFromMapping(mapping, params);
+    const live = this.sessions.get(params.sessionId);
+    // Rebuilding a busy session would orphan its turn: cancel and close could no longer reach it.
+    const session = live && (live.active || live.queue.length > 0) ? live : this.sessionFromMapping(mapping, params);
     this.sessions.set(params.sessionId, session);
+    if (options.replay) await this.replayThread(params.sessionId, session, options.replay);
     await this.publishSessionInfo(params.sessionId, session);
     setImmediate(async () => {
       try {
