@@ -64,6 +64,11 @@ export function toAcpV2Update(update: SessionUpdate): v2.SessionUpdate {
         ...update,
         sessionUpdate: 'tool_call_update',
       } as unknown as v2.SessionUpdate;
+    case 'config_option_update':
+      return {
+        ...update,
+        configOptions: toAcpV2ConfigOptions(update.configOptions) ?? [],
+      } as v2.SessionUpdate;
     case 'plan':
       return {
         sessionUpdate: 'plan_update',

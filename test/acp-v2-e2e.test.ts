@@ -208,6 +208,37 @@ describe('ACP v2 adapter', () => {
     }
   });
 
+  it('sends v2 config options in config_option_update after set_config_option', async () => {
+    const { process, send, waitFor } = startClient(path.join(fixtureDir, 'config-option-state'));
+    try {
+      send(1, 'initialize', { protocolVersion: 2, info: { name: 'v2-config-test', version: '0.0.0' }, capabilities: {} });
+      expect((await waitFor((message) => message.id === 1)).result?.protocolVersion).toBe(2);
+
+      send(2, 'session/new', { cwd: fixtureDir, mcpServers: [] });
+      const sessionId = (await waitFor((message) => message.id === 2)).result?.sessionId;
+      expect(typeof sessionId).toBe('string');
+
+      send(3, 'session/set_config_option', { sessionId, configId: 'permission', type: 'id', value: 'bypass' });
+      const response = await waitFor((message) => message.id === 3);
+      const update = await waitFor(
+        (message) =>
+          message.method === 'session/update' &&
+          (message.params?.update as { sessionUpdate?: string }).sessionUpdate === 'config_option_update',
+      );
+
+      for (const options of [
+        response.result?.configOptions,
+        (update.params?.update as { configOptions?: unknown }).configOptions,
+      ] as Array<Array<Record<string, unknown>>>) {
+        expect(options.length).toBeGreaterThan(0);
+        expect(options.every((option) => typeof option.configId === 'string' && !('id' in option))).toBe(true);
+        expect(options.find((option) => option.configId === 'permission')?.currentValue).toBe('bypass');
+      }
+    } finally {
+      await stopProcess(process);
+    }
+  });
+
   it('lists persisted sessions with directory filtering, metadata, and pagination', async () => {
     const stateDir = path.join(fixtureDir, 'list-state');
     const store = new FileThreadMappingStore(stateDir);

@@ -57,6 +57,36 @@ describe('toAcpV2Update', () => {
     });
   });
 
+  test('renames config option id to configId in config_option_update', () => {
+    const update = {
+      sessionUpdate: 'config_option_update',
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'smart',
+          options: [{ value: 'smart', name: 'Smart' }],
+        },
+      ],
+    } as SessionUpdate;
+
+    expect(toAcpV2Update(update)).toEqual({
+      sessionUpdate: 'config_option_update',
+      configOptions: [
+        {
+          configId: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'smart',
+          options: [{ value: 'smart', name: 'Smart' }],
+        },
+      ],
+    });
+  });
+
   test('passes through updates shared by both protocol versions', () => {
     const update = {
       sessionUpdate: 'agent_message_chunk',
