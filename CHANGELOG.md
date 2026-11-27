@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Drop a session created by `session/new` that never receives a prompt on `session/close` or when the adapter exits (stdin closed, `SIGINT`, or `SIGTERM`), on ACP v1 and the experimental v2 bridge. A client that fails before its first prompt no longer leaves an empty session in `session/list`. Loaded, resumed, and used sessions are kept; `session/set_config_option` alone does not count as use.
+- Stop Amp CLI processes on `session/close` and on exit through the experimental v2 bridge, as v1 already does.
+
 ## 0.13.0 - 2026-11-15
 
 ### Changed

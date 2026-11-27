@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AmpStreamMessage, AmpTransport } from './amp-transport.js';
 import { AmpAcpAgent } from './server.js';
+import { FileThreadMappingStore, type ThreadMappingStore } from './thread-mapping-store.js';
 
 const threadId = 'T-01234567-89ab-cdef-0123-456789abcdef';
 
@@ -43,8 +44,9 @@ describe('session list, delete, and close', () => {
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function createAgent(transport = fastTransport()) {
+  function createAgent(transport = fastTransport(), threadStore?: ThreadMappingStore) {
     return new AmpAcpAgent(createClient(), transport, {
+      ...(threadStore ? { threadStore } : {}),
       exportThread: async () => [],
       replayRetry: { attempts: 1, delayMs: 0 },
       discoverPluginModes: () => [],
@@ -165,6 +167,88 @@ describe('session list, delete, and close', () => {
     await restarted.initialize({ protocolVersion: 1, clientCapabilities: {} });
     const loaded = await restarted.loadSession({ sessionId: session.sessionId, cwd: '/tmp', mcpServers: [] });
     expect(loaded.configOptions).toBeDefined();
+  });
+
+  it('drops a never-used new session on close, even after a config change', async () => {
+    const agent = createAgent();
+    await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    await agent.setSessionConfigOption({ sessionId: session.sessionId, configId: 'reasoning-effort', value: 'high' });
+    expect((await agent.listSessions({})).sessions).toHaveLength(1);
+
+    await agent.closeSession({ sessionId: session.sessionId });
+
+    expect((await agent.listSessions({})).sessions).toEqual([]);
+    await expect(createAgent().loadSession({ sessionId: session.sessionId, cwd: '/tmp', mcpServers: [] }))
+      .rejects.toThrow('No durable Amp thread mapping');
+  });
+
+  it('drops only never-used sessions it created on shutdown', async () => {
+    const store = new FileThreadMappingStore(stateDir);
+    await store.save({ sessionId: 'S-other-000000', threadId: null, cwd: '/tmp' });
+
+    const agent = createAgent();
+    await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    const unused = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    const prompted = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    await agent.prompt({ sessionId: prompted.sessionId, prompt: [{ type: 'text', text: 'Keep me' }] });
+    const steered = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    await agent.extMethod('_amp/session/steer', {
+      sessionId: steered.sessionId,
+      steerId: 'steer-1',
+      prompt: [{ type: 'text', text: 'Keep me too' }],
+    });
+    await agent.resumeSession({ sessionId: 'S-other-000000', cwd: '/tmp', mcpServers: [] });
+
+    await agent.shutdown();
+    await agent.shutdown();
+
+    expect(await store.load(unused.sessionId)).toBeNull();
+    expect((await store.load(prompted.sessionId))?.threadId).toBe(threadId);
+    expect(await store.load(steered.sessionId)).not.toBeNull();
+    expect(await store.load('S-other-000000')).not.toBeNull();
+  });
+
+  it('keeps a new session that another process has used since', async () => {
+    const store = new FileThreadMappingStore(stateDir);
+    const agent = createAgent();
+    await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    const session = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    await store.save({ sessionId: session.sessionId, threadId, cwd: '/tmp', title: 'Used elsewhere' });
+
+    await agent.closeSession({ sessionId: session.sessionId });
+    await agent.shutdown();
+
+    expect((await store.load(session.sessionId))?.threadId).toBe(threadId);
+  });
+
+  it('logs a failed drop instead of failing close or shutdown', async () => {
+    const store = new FileThreadMappingStore(stateDir);
+    const failing: ThreadMappingStore = {
+      load: (sessionId) => store.load(sessionId),
+      save: (mapping) => store.save(mapping),
+      delete: async () => { throw new Error('disk gone'); },
+    };
+    const agent = createAgent(fastTransport(), failing);
+    await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    const closed = await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+
+    await expect(agent.closeSession({ sessionId: closed.sessionId })).resolves.toEqual({});
+    await expect(agent.shutdown()).resolves.toBeUndefined();
+  });
+
+  it('does not let a hung drop block shutdown', async () => {
+    const store = new FileThreadMappingStore(stateDir);
+    const hanging: ThreadMappingStore = {
+      load: () => new Promise(() => {}),
+      save: (mapping) => store.save(mapping),
+    };
+    const agent = createAgent(fastTransport(), hanging);
+    await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+
+    await expect(agent.shutdown(10)).resolves.toBeUndefined();
   });
 
   it('cancels active and queued turns when a session is deleted', async () => {

@@ -117,7 +117,7 @@ Clients that advertise `clientCapabilities.auth.terminal: true` receive a standa
 - **Conversation continuity** — Thread context is preserved across multiple prompts within a session
 - **Session resume** — `session/load` reattaches to the underlying Amp thread after amp-acp restarts, so ACP clients can reopen earlier sessions
 - **Session metadata** — each session publishes a title derived from the first prompt (60 characters, whitespace collapsed) and an `updatedAt` timestamp after every turn via `session_info_update`; both are persisted with the session mapping and restored on load or resume
-- **Session discovery and lifecycle** — `session/list` returns persisted sessions (including new sessions that have not started an Amp thread yet), while `session/delete` and `session/close` cancel active and queued work. Delete removes only amp-acp's local mapping; the Amp thread itself is retained
+- **Session discovery and lifecycle** — `session/list` returns persisted sessions (including new sessions that have not started an Amp thread yet; a new session that never gets a prompt is dropped on close or process exit), while `session/delete` and `session/close` cancel active and queued work. Delete removes only amp-acp's local mapping; the Amp thread itself is retained
 - **Native thread lifecycle** — ACP clients can persist Amp's durable thread ID and archive or unarchive that exact thread
 - **Native steering** — local CLI sessions keep the Amp process alive across cancellation and send the replacement prompt with Amp's `steer` marker instead of queuing it as ordinary input
 - **Token usage** — each `session/prompt` answers with the turn's token usage (`PromptResponse.usage`: input, output, cache reads and writes), counted from the usage Amp reports for each model response
@@ -200,7 +200,8 @@ Both values are stored alongside the ACP-to-Amp mapping and restored by `session
 amp-acp advertises `sessionCapabilities.list`, `delete`, `close`, and `resume`.
 
 - `session/list` returns persisted sessions filtered by `cwd` when supplied, newest `updatedAt` first. A session appears as soon as it is created, before its first prompt starts an Amp thread. Results are paginated with an opaque `nextCursor`.
-- `session/close` cancels the active turn and any queued prompts, then releases the in-memory session. The persisted mapping stays, so `session/load` can reopen it later.
+- A session created by `session/new` that never receives a prompt is dropped on `session/close` or when the adapter exits (stdin closed, `SIGINT`, or `SIGTERM`). A client that fails before its first prompt leaves no empty session behind. `session/set_config_option` alone does not count as use. Sessions loaded or resumed from an earlier process are never dropped, and neither is a session another adapter process has used since. A killed process (`SIGKILL`) cannot clean up.
+- `session/close` cancels the active turn and any queued prompts, then releases the in-memory session. The persisted mapping stays, so `session/load` can reopen it later, unless the session never received a prompt.
 - `session/delete` does the same cancellation and removes the local mapping. It does **not** delete or archive the underlying Amp thread; the thread remains available through the Amp CLI. Delete and close are idempotent, including for unknown session IDs.
 
 Deleting a session also makes later `session/load` and `session/resume` calls fail with an unknown-session error until a new mapping is created.

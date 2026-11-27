@@ -125,6 +125,14 @@ export class AcpV2Adapter {
     return this.app.connect(stream);
   }
 
+  close(): void {
+    this.inner.close();
+  }
+
+  shutdown(): Promise<void> {
+    return this.inner.shutdown();
+  }
+
   private async initialize(request: v2.InitializeRequest): Promise<v2.InitializeResponse> {
     const response: InitializeResponse = await this.inner.initialize({
       protocolVersion: 1,
@@ -191,8 +199,7 @@ export class AcpV2Adapter {
   }
 
   private async closeSession(request: v2.CloseSessionRequest): Promise<void> {
-    await this.inner.cancel({ sessionId: request.sessionId } as CancelNotification);
-    this.inner.sessions.delete(request.sessionId);
+    await this.inner.closeSession({ sessionId: request.sessionId });
   }
 
   private async setConfigOption(

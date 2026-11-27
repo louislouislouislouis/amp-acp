@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { FileThreadMappingStore } from '../src/thread-mapping-store.js';
@@ -203,6 +203,36 @@ describe('ACP v2 adapter', () => {
           (message.params?.update as { state?: string }).state === 'idle',
       );
       expect((idle.params?.update as { stopReason?: string }).stopReason).toBe('end_turn');
+    } finally {
+      await stopProcess(process);
+    }
+  });
+
+  it('drops never-used sessions on session/close and when stdin closes', async () => {
+    const stateDir = path.join(fixtureDir, 'drop-unused-state');
+    const store = new FileThreadMappingStore(stateDir);
+    const { process, send, waitFor } = startClient(stateDir);
+    const exited = new Promise<void>((resolve) => process.once('exit', () => resolve()));
+    try {
+      send(1, 'initialize', { protocolVersion: 2, info: { name: 'v2-drop-test', version: '0.0.0' }, capabilities: {} });
+      expect((await waitFor((message) => message.id === 1)).result?.protocolVersion).toBe(2);
+
+      send(2, 'session/new', { cwd: fixtureDir, mcpServers: [] });
+      const closed = (await waitFor((message) => message.id === 2)).result?.sessionId as string;
+      send(3, 'session/new', { cwd: fixtureDir, mcpServers: [] });
+      const abandoned = (await waitFor((message) => message.id === 3)).result?.sessionId as string;
+      send(4, 'session/set_config_option', { sessionId: abandoned, configId: 'reasoning-effort', value: 'high' });
+      await waitFor((message) => message.id === 4);
+      expect((await readdir(path.join(stateDir, 'sessions'))).sort()).toEqual([`${abandoned}.json`, `${closed}.json`].sort());
+
+      send(5, 'session/close', { sessionId: closed });
+      await waitFor((message) => message.id === 5);
+      expect(await store.load(closed)).toBeNull();
+      expect(await store.load(abandoned)).not.toBeNull();
+
+      process.stdin!.end();
+      await exited;
+      expect(await readdir(path.join(stateDir, 'sessions'))).toEqual([]);
     } finally {
       await stopProcess(process);
     }

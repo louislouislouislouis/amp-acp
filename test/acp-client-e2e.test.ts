@@ -89,6 +89,7 @@ describe('ACP client to compiled amp-acp binary', () => {
         AMP_ACP_CANCEL_MODE: 'steer',
         AMP_CLI_PATH: fakeAmpPath,
         AMP_API_KEY: 'test-key',
+        AMP_ACP_STATE_DIR: path.join(fixtureDir, 'state'),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });

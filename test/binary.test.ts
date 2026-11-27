@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const BINARY_PATH = path.resolve(__dirname, '../dist/amp-acp-test');
@@ -14,6 +16,7 @@ interface JsonRpcMessage {
 }
 
 let proc: ChildProcess;
+let stateDir: string;
 let messageQueue: JsonRpcMessage[] = [];
 let nextId = 1;
 let buffer = '';
@@ -68,6 +71,8 @@ describe('Binary integration tests', () => {
     // an orb's AMP_API_KEY.
     const childEnv = { ...process.env };
     delete childEnv.AMP_API_KEY;
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'amp-acp-binary-state-'));
+    childEnv.AMP_ACP_STATE_DIR = stateDir;
     proc = spawn(BINARY_PATH, [], {
       stdio: ['pipe', 'pipe', 'ignore'],
       env: childEnv,
@@ -91,6 +96,7 @@ describe('Binary integration tests', () => {
     if (proc) {
       proc.kill();
     }
+    fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
   it.each([{}, { auth: { terminal: false } }, { terminal: true }])(
@@ -324,4 +330,63 @@ describe('Binary integration tests', () => {
     expect(notification).toBeDefined();
     expect(notification.method).toBe('session/update');
   });
+});
+
+describe('Binary exit cleanup', () => {
+  it.each(['stdin-close', 'SIGTERM'] as const)(
+    'drops a never-used session but keeps an existing one on %s',
+    async (stop) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'amp-acp-exit-state-'));
+      const sessionsDir = path.join(dir, 'sessions');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sessionsDir, 'S-existing-000000.json'),
+        JSON.stringify({ sessionId: 'S-existing-000000', threadId: null, cwd: '/tmp' }),
+      );
+      const env = {
+        ...process.env,
+        AMP_ACP_STATE_DIR: dir,
+        AMP_ACP_DISABLE_PLUGIN_LIST: '1',
+        AMP_ACP_DISABLE_SHOW_AGENT_OPTIONS: '1',
+      };
+      delete env.AMP_API_KEY;
+      const child = spawn(BINARY_PATH, [], { stdio: ['pipe', 'pipe', 'ignore'], env });
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      const lines: JsonRpcMessage[] = [];
+      let pending = '';
+      child.stdout!.on('data', (chunk: Buffer) => {
+        pending += chunk.toString();
+        const parts = pending.split('\n');
+        pending = parts.pop()!;
+        for (const part of parts) if (part.trim()) lines.push(JSON.parse(part));
+      });
+      const request = async (id: number, method: string, params: unknown) => {
+        child.stdin!.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          const found = lines.find((line) => line.id === id);
+          if (found) return found;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error(`no response to ${method}`);
+      };
+
+      try {
+        await request(1, 'initialize', { protocolVersion: 1, clientCapabilities: {} });
+        const created = await request(2, 'session/new', { cwd: '/tmp', mcpServers: [] });
+        const sessionId = created.result!.sessionId as string;
+        await request(3, 'session/set_config_option', { sessionId, configId: 'reasoning-effort', value: 'high' });
+        expect(fs.readdirSync(sessionsDir).sort()).toEqual(['S-existing-000000.json', `${sessionId}.json`].sort());
+
+        if (stop === 'stdin-close') child.stdin!.end();
+        else child.kill('SIGTERM');
+        await exited;
+
+        expect(fs.readdirSync(sessionsDir)).toEqual(['S-existing-000000.json']);
+      } finally {
+        child.kill('SIGKILL');
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

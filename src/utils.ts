@@ -23,6 +23,27 @@ export function nodeToWebReadable(nodeStream: Readable): ReadableStream<Uint8Arr
   });
 }
 
+interface Shutdownable {
+  close(): void;
+  shutdown(): Promise<void>;
+}
+
+/** Runs async cleanup when the ACP stream ends or on SIGINT/SIGTERM; `exit` only allows sync work. */
+export function shutdownOnExit(closed: Promise<void>, getTarget: () => Shutdownable | undefined): void {
+  const shutdown = async (exitCode?: number) => {
+    try {
+      await getTarget()?.shutdown();
+    } catch (e) {
+      console.error('[acp] shutdown failed', e);
+    }
+    if (exitCode !== undefined) process.exit(exitCode);
+  };
+  void closed.then(() => shutdown(), () => shutdown());
+  process.once('exit', () => getTarget()?.close());
+  process.once('SIGINT', () => void shutdown(130));
+  process.once('SIGTERM', () => void shutdown(143));
+}
+
 export function unreachable(x: never): never {
   throw new Error(`unreachable: ${JSON.stringify(x)}`);
 }

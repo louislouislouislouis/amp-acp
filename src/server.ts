@@ -463,6 +463,8 @@ export class AmpAcpAgent {
   private threadStore: ThreadMappingStore;
   private setThreadArchived: SetThreadArchived;
   sessions = new Map<string, SessionState>();
+  private unusedSessions = new Set<string>();
+  private shutdownPromise?: Promise<void>;
   private clientCapabilities?: ClientCapabilities;
 
   private exportThread: ThreadHistoryExporter;
@@ -565,6 +567,7 @@ export class AmpAcpAgent {
       acpState: createAcpConversionState(),
     };
     this.sessions.set(sessionId, session);
+    this.unusedSessions.add(sessionId);
     await this.persistSessionQuiet(sessionId, session);
 
     const result: NewSessionResponse = {
@@ -911,6 +914,7 @@ export class AmpAcpAgent {
       this.cancelSessionTurns(session);
       this.sessions.delete(params.sessionId);
     }
+    this.unusedSessions.delete(params.sessionId);
     this.transport.closeSession?.(params.sessionId);
     await this.threadStore.delete?.(params.sessionId);
     return {};
@@ -923,7 +927,24 @@ export class AmpAcpAgent {
       this.sessions.delete(params.sessionId);
     }
     this.transport.closeSession?.(params.sessionId);
+    await this.dropIfUnused(params.sessionId);
     return {};
+  }
+
+  /**
+   * Removes the record of a session the client gave up on before its first
+   * prompt, so failed client starts do not pile up empty sessions.
+   */
+  private async dropIfUnused(sessionId: string): Promise<void> {
+    if (!this.unusedSessions.delete(sessionId)) return;
+    try {
+      // Another adapter process may have loaded and used the session since.
+      const mapping = await this.threadStore.load(sessionId);
+      if (!mapping || mapping.threadId || mapping.title) return;
+      await this.threadStore.delete?.(sessionId);
+    } catch (e) {
+      console.error(`[acp] failed to drop unused session ${sessionId}`, e);
+    }
   }
 
   private cancelSessionTurns(s: SessionState, preserveSteering = false): void {
@@ -946,6 +967,7 @@ export class AmpAcpAgent {
   async prompt(params: PromptRequest): Promise<PromptResponse> {
     const s = this.sessions.get(params.sessionId);
     if (!s) throw new Error('Session not found');
+    this.unusedSessions.delete(params.sessionId);
     if (s.active || s.queue.length > 0) {
       // A steered replacement may start while the cancelled turn is still
       // unwinding; the replacement owns the same live Amp process.
@@ -1028,6 +1050,7 @@ export class AmpAcpAgent {
     if (!s) {
       throw RequestError.invalidParams(undefined, `Unknown session: ${params.sessionId}`);
     }
+    this.unusedSessions.delete(params.sessionId);
     if (s.executor === 'orb') {
       return { outcome: 'failed', reason: 'Steering is only available for local sessions' };
     }
@@ -1205,6 +1228,22 @@ export class AmpAcpAgent {
 
   close(): void {
     this.transport.closeAll?.();
+  }
+
+  /** Bounded so a slow or hung disk cannot block process exit. */
+  shutdown(timeoutMs = 1000): Promise<void> {
+    this.close();
+    this.shutdownPromise ??= new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        console.error('[acp] timed out dropping unused sessions');
+        resolve();
+      }, timeoutMs);
+      void Promise.all([...this.unusedSessions].map((id) => this.dropIfUnused(id))).then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    return this.shutdownPromise;
   }
 
   /**

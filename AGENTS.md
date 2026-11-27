@@ -15,7 +15,7 @@ This is an ACP (Agent Client Protocol) adapter that bridges Amp Code to ACP-comp
 - `src/agent-app.ts` — Builds the SDK 2 agent app, registers the v1 agent methods, and falls through to the extension-method handler
 - `src/acp-client.ts` — Minimal client interface used by `AmpAcpAgent` and its tests; sends `session/update` notifications and custom client-bound notifications
 - `src/acp-v2.ts` — Experimental opt-in ACP v2 bridge (`AMP_ACP_PROTOCOL=v2`); translates v2 requests and updates around the existing v1 `AmpAcpAgent`. v1 remains the default
-- `src/server.ts` — `AmpAcpAgent` class: handles session creation, listing, deletion, and closure; serializes prompts per session with a bounded queue, next-turn steering, and cancel semantics; advertises Amp slash commands; manages MCP config; and calls `@ampcode/sdk` (formerly `@sourcegraph/amp-sdk`)
+- `src/server.ts` — `AmpAcpAgent` class: handles session creation, listing, deletion, and closure; drops never-used new sessions on close and shutdown; serializes prompts per session with a bounded queue, next-turn steering, and cancel semantics; advertises Amp slash commands; manages MCP config; and calls `@ampcode/sdk` (formerly `@sourcegraph/amp-sdk`)
 - `src/amp-transport.ts` — Executes Amp through the CLI or SDK and manages native thread archival; explicit model selections use `--model` via the CLI, including SDK fallback for local and Orb sessions; image turns use CLI JSON input locally or uploaded `--attach` files for Orbs
 - `src/thread-mapping-store.ts` — Persists durable ACP-session-to-Amp-thread mappings, session settings, title, and last-updated timestamp; lists and deletes records for session lifecycle operations
 - `src/thread-history.ts` — Exports Amp thread messages, title, and timestamp for `session/load` replay and metadata recovery
@@ -25,7 +25,7 @@ This is an ACP (Agent Client Protocol) adapter that bridges Amp Code to ACP-comp
 - `src/agent-models.ts` — Discovers Amp's thread models from `amp plugins show-agent-options` (Models section, cached 60s per cwd)
 - `src/turn-usage.ts` — Aggregates a turn's token usage from Amp stream messages (last report wins per response id) for `PromptResponse.usage`, and exposes the latest model call's context total for `usage_update`
 - `src/turn-events.ts` — Parses Amp MCP and permission-denial status from the stream and maps Amp stop reasons to ACP stop reasons
-- `src/utils.ts` — Node-to-Web stream converters
+- `src/utils.ts` — Node-to-Web stream converters and the shutdown hook both protocol runners use (connection end, `SIGINT`, `SIGTERM`)
 
 ## Code Style
 - TypeScript with ES modules (`"type": "module"` in package.json), use `.js` extension in imports
